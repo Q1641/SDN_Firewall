@@ -1,0 +1,336 @@
+# coding=utf-8
+# 编写一个简单控制器程序，实现静态路由器功能
+# 对主机发来的arp请求进行回应
+# 按照静态路由表进行ip层的转发
+# 回应对于路由器本身的icmp echo请求
+# 对于未能匹配路由表的ip包，发送icmp网络不可达报文
+
+from pox.core import core
+import pox.openflow.libopenflow_01 as of
+from pox.openflow.libopenflow_01 import *
+from pox.lib.addresses import IPAddr, EthAddr
+from pox.lib.packet import ethernet
+from pox.lib.packet.ethernet import ETHER_ANY, ETHER_BROADCAST
+from pox.lib.packet import arp, ipv4, icmp
+from pox.lib.packet.icmp import TYPE_ECHO_REQUEST, TYPE_ECHO_REPLY, TYPE_DEST_UNREACH, CODE_UNREACH_NET, CODE_UNREACH_HOST
+
+log = core.getLogger()
+portToIP = {}
+# DPID 1: InternetOut
+portToIP[1] = {
+    1: "10.0.0.1",     # veth_out1
+    2: "10.0.0.2",     # veth_out2
+    3: "192.168.230.155"     # ens33 (assign actual IP or placeholder)
+}
+
+# DPID 2: Intranet
+portToIP[2] = {
+    1: "10.10.0.2",    # ens34
+    2: "10.0.0.3",     # veth_intra2
+    3: "10.0.0.4"      # veth_intra3
+}
+
+# DPID 3: SvrFarm
+portToIP[3] = {
+    1: "10.0.0.5",     # veth_farm1
+    2: "10.20.0.2",    # ens35
+    3: "10.0.0.6"      # veth_farm3
+}
+
+routeTable = {
+  1: [  # InternetOut (DPID 1)
+    ['10.10.0.0/16', '10.0.0.4', 1, '10.0.0.1', 1],  # to Intranet
+    ['10.20.0.0/16', '10.0.0.6', 2, '10.0.0.2', 2],  # to SvrFarm
+    ['0.0.0.0/0',     '192.168.230.2', 3,     '192.168.230.155', 3]  # Direct to Internet
+  ],
+
+  2: [  # Intranet (DPID 2)
+    ['10.10.0.0/16', '0.0.0.0',  1,      '10.10.0.2', 1],  # Direct
+    ['10.20.0.0/16', '10.0.0.5', 2, '10.0.0.3', 2],  # via SvrFarm
+    ['0.0.0.0/0',     '10.0.0.1', 3, '10.0.0.4', 3]  # via InternetOut
+  ],
+
+  3: [  # SvrFarm (DPID 3)
+    ['10.20.0.0/16', '0.0.0.0',  2,      '10.20.0.2', 2],  # Direct
+    ['10.10.0.0/16', '10.0.0.3', 1, '10.0.0.5', 1],   # via Intranet
+    ['0.0.0.0/0',     '10.0.0.2', 3, '10.0.0.6', 3]   # via InternetOut
+  ]
+}
+
+
+# arp映射表
+# 结构为{ dpid1:{ port_no1:{ ip1:mac1 , ip1:mac2 , ... } , port_no2:{ ... } , ... } , dpid2:{ ... } , ... }
+arpTable = {}
+# 端口映射表
+# 结构为{ dpid : [ [ port_no1 , mac1 , ip1 ] , [ port_no2 , mac2 , ip2 ] , dpid2 : ... ] }
+portTable = {}
+
+# 路由表常量
+# 结构为：[ [ 网络 , 下一跳ip地址 , 下一跳接口名称 , 下一跳接口ip , 下一跳端口 ] , [ ... ] , ... ]
+rDST_NETWORK = 0
+rNEXTHOP_IP = 1
+rNEXTHOP_PORT_NAME = 2
+rNEXTHOP_PORT_IP = 3
+rNEXTHOP_PORT = 4
+
+# 端口映射表常量
+# 记录路由器本身端口、ip与mac映射
+# 结构为{ dpid : [ [ port_no1 , mac1 , ip1 ] , [ port_no2 , mac2 , ip2 ] , dpid2 : ... ] }
+pPORT = 0
+pPORT_MAC = 1
+pPORT_IP = 2
+
+class routerConnection(object):
+
+  def __init__(self,connection):
+    dpid = connection.dpid
+    log.debug('-' * 50 + "dpid=" + str(dpid) + '-' * 50)
+    log.debug('-' * 50 + "I\'m a StaticRouter" + '-' * 50)
+
+    # 初始化arp映射表
+    arpTable[dpid] = {}
+    # 初始化端口映射表
+    portTable[dpid] = []
+
+    #根据features_reply包来生成arp表和端口映射表
+    for entry in connection.ports.values():
+      port = entry.port_no
+      mac = entry.hw_addr
+      #对路由器与控制器端口不生成arp表
+      if port <= of.ofp_port_rev_map['OFPP_MAX']:
+        arpTable[dpid][port] = {}
+        ip = IPAddr(portToIP[dpid][port]) # 未分配ip
+        arpTable[dpid][port][ip] = mac
+        portTable[dpid].append([port, mac, ip])
+
+    # 打印arp表
+    log.debug('-'*50 + 'arpTable' + '-'*50)
+    log.debug(arpTable)
+
+    # 打印端口映射表
+    log.debug('-'*50 + 'portTable' + '-'*50)
+    log.debug(portTable)
+
+    connection.addListeners(self)
+
+  # 流删除消息
+  def _handle_FlowRemoved(self,event):
+    dpid = event.connection.dpid
+    log.debug('-' * 50 + "dpid=" + str(dpid) + '-' * 50)
+    log.debug('A FlowRemoved Message Recieved')
+    log.debug('---A flow has been removed')
+
+  # PackerIn消息
+  def _handle_PacketIn(self,event):
+    dpid = event.connection.dpid
+    log.debug('-' * 50 + "dpid=" + str(dpid) + '-' * 50)
+    log.debug("A PacketIn Message Recieved")
+    packet = event.parsed
+
+    # arp
+    if packet.type == ethernet.ARP_TYPE:
+      log.debug('---It\'s an arp packet')
+      arppacket = packet.payload
+      # arp回应
+      if arppacket.opcode == arp.REPLY:
+        arpTable[event.connection.dpid][event.ofp.in_port][arppacket.protosrc] = arppacket.hwsrc
+        arpTable[event.connection.dpid][event.ofp.in_port][arppacket.protodst] = arppacket.hwdst
+        # 更新后的arp表
+        log.debug('------arpTable learned form arp Reply srt and dst')
+        log.debug('------' + str(arpTable))
+
+      # arp请求
+      if arppacket.opcode == arp.REQUEST:
+        log.debug('------Arp request')
+        log.debug('------' + arppacket._to_str())
+        arpTable[event.connection.dpid][event.ofp.in_port][arppacket.protosrc] = arppacket.hwsrc
+        # 更新后的arp表
+        log.debug('------arpTable learned form arp Request srt')
+        log.debug('------' + str(arpTable))
+
+        # 发送arp回应
+        if arppacket.protodst in arpTable[event.connection.dpid][event.ofp.in_port]:
+          log.debug('------I know that ip %s,send reply'%arppacket.protodst)
+
+          #构造arp回应
+          a = arppacket
+          r = arp()
+          r.hwtype = a.hwtype
+          r.prototype = a.prototype
+          r.hwlen = a.hwlen
+          r.protolen = a.protolen
+          r.opcode = arp.REPLY
+          r.hwdst = a.hwsrc
+          r.protodst = a.protosrc
+          r.protosrc = a.protodst
+          r.hwsrc = arpTable[event.connection.dpid][event.ofp.in_port][arppacket.protodst]
+          e = ethernet(type=packet.type, src=r.hwsrc,dst=a.hwsrc)
+          e.set_payload(r)
+          msg = of.ofp_packet_out()
+          msg.data = e.pack()
+          msg.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+          event.connection.send(msg)
+
+    # ip包
+    if packet.type == ethernet.IP_TYPE:
+      log.debug('---It\'s an ip packet')
+      ippacket = packet.payload
+      # 目的ip
+      dstip = ippacket.dstip
+
+      # 查找端口映射表，判断目的ip是否为路由器本身,回应icmp echo reply
+      for t in portTable[dpid]:
+        selfip = t[pPORT_IP]
+        # 如果目的ip地址为当前路由器拥有的地址
+        if dstip == selfip:
+          #如果是icmp echo request报文
+          if ippacket.protocol == ipv4.ICMP_PROTOCOL:
+            log.debug('!!!!!!!!!!An icmp for me!!!!!!!!!!!')
+            icmppacket = ippacket.payload
+            #是否为icmp echo request
+            if icmppacket.type == TYPE_ECHO_REQUEST:
+              selfmac = t[pPORT_MAC]
+              log.debug('!!!!!!!!!!An icmp echo request for me!!!!!!!!!!!')
+
+              # 构造icmp包
+              r = icmppacket
+              r.type = TYPE_ECHO_REPLY
+
+              #构造ip包
+              s = ipv4()
+              s.protocol = ipv4.ICMP_PROTOCOL
+              s.srcip = selfip
+              s.dstip = ippacket.srcip
+              s.payload = r
+
+              #构造以太网帧
+              e = ethernet()
+              e.type = ethernet.IP_TYPE
+              e.src = selfmac
+              e.dst = packet.src
+              e.payload = s
+
+              # 构造PacketOut消息
+              # 回发icmp包
+              msg = of.ofp_packet_out()
+              msg.data = e.pack()
+              msg.actions.append(of.ofp_action_output(port=event.port))
+              event.connection.send(msg)
+              log.debug('!!!!!!!!!!Reply it!!!!!!!!!!!')
+              return
+
+      # 搜索路由表
+      for t in routeTable[dpid]:
+        # 路由表项中的网络前缀
+        dstnetwork = t[rDST_NETWORK]
+        # 如果目的ip在路由表中
+        if dstip.inNetwork(dstnetwork):
+          log.debug('------ip dst %s is in the routeTable' % dstip)
+
+          # 找到对应的下一跳信息
+          nh_port = t[rNEXTHOP_PORT]
+          nh_ip = IPAddr(t[rNEXTHOP_IP])
+          # 直接交付
+          if nh_ip == IPAddr('0.0.0.0'):
+            nh_ip = dstip
+          nh_port_ip = IPAddr(t[rNEXTHOP_PORT_IP])
+
+          # 查找arp表
+          nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
+
+          # 若下一跳目的主机的mac已知，添加流表
+          if nh_ip in arpTable[dpid][nh_port]:
+            log.debug('------I know the next dst %s mac' % nh_ip)
+            nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
+
+            # 下发流表
+            msg1 = of.ofp_flow_mod()
+            # 匹配
+            msg1.match = of.ofp_match()
+            msg1.match.dl_type = ethernet.IP_TYPE
+            msg1.match.nw_dst = dstip
+            # Flow actions
+            msg1.command = 0
+            msg1.idle_timeout = 10
+            msg1.hard_timeout = 30
+            msg1.buffer_id = event.ofp.buffer_id
+            msg1.flags = 3  # of.ofp_flow_mod_flags_rev_map('OFPFF_CHECK_OVERLAP') | of.ofp_flow_mod_flags_rev_map('OFPFF_CHECK_OVERLAP')
+            msg1.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+            msg1.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+            msg1.actions.append(of.ofp_action_output(port=nh_port))
+            event.connection.send(msg1)
+            log.debug('###Add a flow###')
+
+          # 若下一跳目的主机的mac未知，发送arp请求，并广播ip包
+          else:
+            log.debug('------I don\'t know the next dst %s mac,make an arp request' % nh_ip)
+            # 构造arp请求
+            r = arp()
+            r.opcode = arp.REQUEST
+            r.protosrc = nh_port_ip
+            r.hwsrc = nh_mac_src
+            r.protodst = nh_ip
+            e_arp = ethernet(type=ethernet.ARP_TYPE, src=r.hwsrc, dst=ETHER_BROADCAST)
+            e_arp.set_payload(r)
+            msg = of.ofp_packet_out()
+            msg.data = e_arp.pack()
+            msg.actions.append(of.ofp_action_output(port=nh_port))
+            msg.in_port = event.ofp.in_port
+            event.connection.send(msg)
+
+            # 广播ip包，不下发流表
+            nh_mac_dst = ETHER_BROADCAST
+            msg1 = of.ofp_packet_out()
+            msg1.in_port = event.port
+            msg1.buffer_id = event.ofp.buffer_id
+            msg1.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+            msg1.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+            msg1.actions.append(of.ofp_action_output(port=nh_port))
+            event.connection.send(msg1)
+
+          return
+
+      # 在路由表中未找到匹配项，发送icmp网络不可达报文
+      r = icmp()
+      r.type = TYPE_DEST_UNREACH
+      r.code = CODE_UNREACH_NET
+      d = ippacket.pack()[:ippacket.iplen + 8]
+      import struct
+      d = struct.pack("!I", 0) + d  #不可达报文的unused字段，也包含在icmp的payload中
+                                    #这里大写的I代表4字节无符号整形，0代表数值，
+                                    # struct.pack("!I", 0)的返回值是4个字节的0，正好填在不可达报文未用字段
+      r.payload = d
+      s = ipv4()
+      s.protocol = ipv4.ICMP_PROTOCOL
+      for t in portTable[dpid]:
+        selfip = t[pPORT_IP]
+        if(event.port == t[pPORT]):
+          s.srcip = selfip
+          break
+      s.dstip = ippacket.srcip
+      s.payload = r
+      e = ethernet()
+      e.type = ethernet.IP_TYPE
+      e.src = packet.dst
+      e.dst = packet.src
+      e.payload = s
+
+      # 构造PacketOut消息
+      # 回发icmp包
+      msg = of.ofp_packet_out()
+      msg.data = e.pack()
+      msg.actions.append(of.ofp_action_output(port=event.port))
+      event.connection.send(msg)
+
+class MyHubComponent(object):
+  def __init__(self):
+    core.openflow.addListeners(self)
+
+  def _handle_ConnectionUp(self,event):
+    dpid = event.connection.dpid
+    log.debug('-' * 45 + "A Switch ConnectionUp!" + '-' * 50)
+    routerConnection(event.connection)
+
+def launch():
+  core.registerNew(MyHubComponent)
+
