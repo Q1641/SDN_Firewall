@@ -4,7 +4,7 @@
 # 按照静态路由表进行ip层的转发
 # 回应对于路由器本身的icmp echo请求
 # 对于未能匹配路由表的ip包，发送icmp网络不可达报文
-
+import copy
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 from pox.openflow.libopenflow_01 import *
@@ -12,9 +12,10 @@ from pox.lib.addresses import IPAddr, EthAddr
 from pox.lib.packet import ethernet
 from pox.lib.packet.ethernet import ETHER_ANY, ETHER_BROADCAST
 from pox.lib.packet import arp, ipv4, icmp
-from pox.lib.packet.icmp import TYPE_ECHO_REQUEST, TYPE_ECHO_REPLY, TYPE_DEST_UNREACH, CODE_UNREACH_NET, CODE_UNREACH_HOST
+from pox.lib.packet.icmp import TYPE_ECHO_REQUEST, TYPE_ECHO_REPLY, TYPE_DEST_UNREACH, CODE_UNREACH_NET, CODE_UNREACH_HOST, echo
 
 log = core.getLogger()
+
 portToIP = {}
 # DPID 1: InternetOut
 portToIP[1] = {
@@ -57,6 +58,14 @@ routeTable = {
   ]
 }
 
+# NAT variables:
+PUBLIC_IP=IPAddr("192.168.230.155")
+PUBLIC_PORT=3 #ens33
+PUBLIC_MAC=EthAddr("00:00:00:00:00:01")
+PUBLIC_DPID=1
+PUBLIC_GW_MAC=EthAddr('00:50:56:ed:8a:b4')
+ICMP = {}
+NAT = {}
 
 # arp映射表
 # 结构为{ dpid1:{ port_no1:{ ip1:mac1 , ip1:mac2 , ... } , port_no2:{ ... } , ... } , dpid2:{ ... } , ... }
@@ -176,6 +185,7 @@ class routerConnection(object):
       log.debug('---It\'s an ip packet')
       ippacket = packet.payload
       # 目的ip
+      srcip = ippacket.srcip
       dstip = ippacket.dstip
 
       # 查找端口映射表，判断目的ip是否为路由器本身,回应icmp echo reply
@@ -219,6 +229,91 @@ class routerConnection(object):
               log.debug('!!!!!!!!!!Reply it!!!!!!!!!!!')
               return
 
+      # NAT implementation:
+      outbound = srcip.inNetwork("10.0.0.0/8") and not dstip.inNetwork("10.0.0.0/8")
+      inbound = not srcip.inNetwork("10.0.0.0/8") and dstip == PUBLIC_IP
+      if dpid == PUBLIC_DPID:
+        pkt = event.parsed
+        if outbound:
+          if ippacket.protocol == ipv4.ICMP_PROTOCOL:
+            ICMP[str(srcip)] = (pkt.find('icmp').payload.id, pkt.find('icmp').payload.seq)
+            log.info(f"Outbound ICMP NAT {srcip} -> {dstip}")
+            log.info(f"{ICMP[str(srcip)][0]} - {ICMP[str(srcip)][1]}")
+            icmp_req = icmp()
+            icmp_req.type = TYPE_ECHO_REQUEST
+            msg = echo(raw=str(srcip).encode("utf-8"))
+            icmp_req.payload = msg
+            ip_pkt = ipv4()
+            ip_pkt.protocol = ipv4.ICMP_PROTOCOL
+            ip_pkt.srcip = PUBLIC_IP
+            ip_pkt.dstip = IPAddr(dstip)
+            ip_pkt.payload = icmp_req
+            eth_pkt = ethernet()
+            eth_pkt.type = ethernet.IP_TYPE
+            eth_pkt.src = PUBLIC_MAC
+            eth_pkt.dst = PUBLIC_GW_MAC
+            eth_pkt.payload = ip_pkt
+            msg = of.ofp_packet_out()
+            msg.data = eth_pkt.pack()
+            msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+            event.connection.send(msg)
+            return
+          else:
+            log.info(f"Outbound NAT {srcip} -> {dstip}")
+        if inbound:
+          if ippacket.protocol == ipv4.ICMP_PROTOCOL:
+            src_mac = pkt.src
+            realdst = IPAddr(pkt.find('icmp').payload.raw.decode("utf-8"))
+            log.info(f"Inbound ICMP NAT {srcip} -> {realdst}")
+            log.info(f"{ICMP[str(realdst)][0]} - {ICMP[str(realdst)][1]}")
+            nh_port = of.OFPP_FLOOD
+            nh_mac_dst = EthAddr('ff:ff:ff:ff:ff:ff')
+            for t in routeTable[dpid]:
+              dstnetwork = t[rDST_NETWORK]
+              if realdst.inNetwork(dstnetwork):
+                # 找到对应的下一跳信息
+                nh_port = t[rNEXTHOP_PORT]
+                nh_ip = IPAddr(t[rNEXTHOP_IP])
+                if nh_ip == IPAddr('0.0.0.0'):
+                  nh_ip = realdst
+                nh_port_ip = IPAddr(t[rNEXTHOP_PORT_IP])
+                nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
+                break
+            log.info(f'Send to {nh_ip}, port {nh_port}')
+            if nh_ip in arpTable[dpid][nh_port]:
+              nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
+              log.info(f"{nh_mac_dst} -> {nh_ip}")
+
+            realdst = pkt.find('icmp').payload.raw.decode("utf-8")
+            log.info(f"Inbound ICMP NAT {srcip} -> {realdst}")
+            icmp_data = echo()
+            icmp_data.id = ICMP[str(realdst)][0]
+            icmp_data.seq = ICMP[str(realdst)][1]
+            #icmp_rep.payload = icmp_data
+            r = icmppacket
+            r.type = TYPE_ECHO_REPLY
+            r.payload = icmp_data
+
+            s = ipv4()
+            s.protocol = ipv4.ICMP_PROTOCOL
+            s.srcip = IPAddr(srcip)
+            s.dstip = IPAddr(realdst)
+            s.payload = r
+
+            e = ethernet()
+            e.type = ethernet.IP_TYPE
+            e.src = EthAddr(src_mac)
+            e.dst = EthAddr(nh_mac_dst)
+            e.payload = s
+
+            msg = of.ofp_packet_out()
+            msg.data = e.pack()
+            msg.actions.append(of.ofp_action_output(port=event.port))
+            event.connection.send(msg)
+            return
+          else:
+            log.info(f"Inbound NAT {srcip} -> {dstip}")
+          return
       # 搜索路由表
       for t in routeTable[dpid]:
         # 路由表项中的网络前缀
@@ -229,6 +324,8 @@ class routerConnection(object):
 
           # 找到对应的下一跳信息
           nh_port = t[rNEXTHOP_PORT]
+          if nh_port == event.ofp.in_port:
+            return # 应该下达丢包动作
           nh_ip = IPAddr(t[rNEXTHOP_IP])
           # 直接交付
           if nh_ip == IPAddr('0.0.0.0'):

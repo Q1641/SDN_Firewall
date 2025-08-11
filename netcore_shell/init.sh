@@ -43,6 +43,12 @@ for intf in veth_out1 veth_out2 veth_intra3 veth_intra2 veth_farm1 veth_farm3; d
 done
 
 # === Assign IP addresses ===
+ip addr flush dev ens33
+ip addr flush dev ens34
+ip addr flush dev ens35
+ip addr add 192.168.230.155/24 dev ens33
+ip addr add 10.10.0.2/16 dev ens34
+ip addr add 10.20.0.2/16 dev ens35
 ip addr add 10.0.0.1/24 dev veth_out1
 ip addr add 10.0.0.2/24 dev veth_out2
 ip addr add 10.0.0.3/24 dev veth_intra2
