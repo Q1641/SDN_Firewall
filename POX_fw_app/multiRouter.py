@@ -187,7 +187,8 @@ class routerConnection(object):
       # 目的ip
       srcip = ippacket.srcip
       dstip = ippacket.dstip
-
+      if srcip not in arpTable[dpid][event.ofp.in_port]:
+        arpTable[dpid][event.ofp.in_port][srcip] = packet.src
       # 查找端口映射表，判断目的ip是否为路由器本身,回应icmp echo reply
       for t in portTable[dpid]:
         selfip = t[pPORT_IP]
@@ -236,79 +237,56 @@ class routerConnection(object):
         pkt = event.parsed
         if outbound:
           if ippacket.protocol == ipv4.ICMP_PROTOCOL:
-            ICMP[str(srcip)] = (pkt.find('icmp').payload.id, pkt.find('icmp').payload.seq)
+            id = pkt.find('icmp').payload.id
+            ICMP[id] = srcip
             log.info(f"Outbound ICMP NAT {srcip} -> {dstip}")
-            log.info(f"{ICMP[str(srcip)][0]} - {ICMP[str(srcip)][1]}")
-            icmp_req = icmp()
-            icmp_req.type = TYPE_ECHO_REQUEST
-            msg = echo(raw=str(srcip).encode("utf-8"))
-            icmp_req.payload = msg
-            ip_pkt = ipv4()
-            ip_pkt.protocol = ipv4.ICMP_PROTOCOL
-            ip_pkt.srcip = PUBLIC_IP
-            ip_pkt.dstip = IPAddr(dstip)
-            ip_pkt.payload = icmp_req
-            eth_pkt = ethernet()
-            eth_pkt.type = ethernet.IP_TYPE
-            eth_pkt.src = PUBLIC_MAC
-            eth_pkt.dst = PUBLIC_GW_MAC
-            eth_pkt.payload = ip_pkt
-            msg = of.ofp_packet_out()
-            msg.data = eth_pkt.pack()
+            log.info(f"ID: {id} -> {ICMP[id]}")
+            msg = of.ofp_flow_mod()
+            msg.match.in_port = event.ofp.in_port
+            msg.match.dl_type = 0x0800  # IPv4
+            msg.match.nw_proto = 1 #ICMP
+            msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
+            msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+            msg.actions.append(of.ofp_action_dl_addr.set_dst(PUBLIC_GW_MAC))
             msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+            msg.idle_timeout = 10
+            msg.hard_timeout = 30
             event.connection.send(msg)
             return
           else:
             log.info(f"Outbound NAT {srcip} -> {dstip}")
         if inbound:
           if ippacket.protocol == ipv4.ICMP_PROTOCOL:
-            src_mac = pkt.src
-            realdst = IPAddr(pkt.find('icmp').payload.raw.decode("utf-8"))
-            log.info(f"Inbound ICMP NAT {srcip} -> {realdst}")
-            log.info(f"{ICMP[str(realdst)][0]} - {ICMP[str(realdst)][1]}")
-            nh_port = of.OFPP_FLOOD
-            nh_mac_dst = EthAddr('ff:ff:ff:ff:ff:ff')
-            for t in routeTable[dpid]:
+            id = pkt.find('icmp').payload.id
+            realdst = ICMP[id]
+            for t in routeTable[PUBLIC_DPID]:
               dstnetwork = t[rDST_NETWORK]
               if realdst.inNetwork(dstnetwork):
-                # 找到对应的下一跳信息
                 nh_port = t[rNEXTHOP_PORT]
+                if nh_port == event.ofp.in_port:
+                  return
+                # Gateway so we forgo direct connect check
                 nh_ip = IPAddr(t[rNEXTHOP_IP])
-                if nh_ip == IPAddr('0.0.0.0'):
-                  nh_ip = realdst
                 nh_port_ip = IPAddr(t[rNEXTHOP_PORT_IP])
                 nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
+                nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
                 break
-            log.info(f'Send to {nh_ip}, port {nh_port}')
-            if nh_ip in arpTable[dpid][nh_port]:
-              nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
-              log.info(f"{nh_mac_dst} -> {nh_ip}")
-
-            realdst = pkt.find('icmp').payload.raw.decode("utf-8")
-            log.info(f"Inbound ICMP NAT {srcip} -> {realdst}")
-            icmp_data = echo()
-            icmp_data.id = ICMP[str(realdst)][0]
-            icmp_data.seq = ICMP[str(realdst)][1]
-            #icmp_rep.payload = icmp_data
             r = icmppacket
             r.type = TYPE_ECHO_REPLY
-            r.payload = icmp_data
-
+            r.payload = pkt.find('icmp').payload
             s = ipv4()
             s.protocol = ipv4.ICMP_PROTOCOL
-            s.srcip = IPAddr(srcip)
-            s.dstip = IPAddr(realdst)
+            s.srcip = srcip
+            s.dstip = realdst
             s.payload = r
-
             e = ethernet()
             e.type = ethernet.IP_TYPE
-            e.src = EthAddr(src_mac)
-            e.dst = EthAddr(nh_mac_dst)
+            e.src = nh_mac_src
+            e.dst = nh_mac_dst
             e.payload = s
-
             msg = of.ofp_packet_out()
             msg.data = e.pack()
-            msg.actions.append(of.ofp_action_output(port=event.port))
+            msg.actions.append(of.ofp_action_output(port=nh_port))
             event.connection.send(msg)
             return
           else:
