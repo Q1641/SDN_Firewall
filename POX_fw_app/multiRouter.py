@@ -65,7 +65,10 @@ PUBLIC_MAC=EthAddr("00:00:00:00:00:01")
 PUBLIC_DPID=1
 PUBLIC_GW_MAC=EthAddr('00:50:56:ed:8a:b4')
 ICMP = {}
-NAT = {}
+# NAT key + buffer = port number
+# NAT[public_port - BUFFER] = (IP,src port)
+BUFFER = 50000
+NAT = [None for i in range(65536)]
 
 # arp映射表
 # 结构为{ dpid1:{ port_no1:{ ip1:mac1 , ip1:mac2 , ... } , port_no2:{ ... } , ... } , dpid2:{ ... } , ... }
@@ -244,6 +247,8 @@ class routerConnection(object):
             msg = of.ofp_flow_mod()
             msg.match.in_port = event.ofp.in_port
             msg.match.dl_type = 0x0800  # IPv4
+            msg.match.nw_src = srcip
+            msg.match.nw_dst = dstip
             msg.match.nw_proto = 1 #ICMP
             msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
             msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
@@ -254,9 +259,44 @@ class routerConnection(object):
             event.connection.send(msg)
             return
           else:
-            log.info(f"Outbound NAT {srcip} -> {dstip}")
+            udp_pkt = packet.find('udp')
+            tcp_pkt = packet.find('tcp')
+            if udp_pkt:
+              src_port = udp_pkt.srcport
+              dst_port = udp_pkt.dstport
+            elif tcp_pkt:
+              src_port = tcp_pkt.srcport
+              dst_port = tcp_pkt.dstport
+            else:
+              return
+            try:
+              NATport = NAT.index((srcip,src_port))
+            except:
+              NATport = NAT.index(None, BUFFER)
+              NAT[NATport] = (srcip,src_port)
+            log.info(f"Translate {srcip}:{src_port} -> {PUBLIC_IP}:{NATport}")
+            msg = of.ofp_flow_mod()
+            msg.match.dl_type = 0x0800 #ipv4
+            if udp_pkt:
+              msg.match.nw_proto = 17 #UDP
+            else:
+              msg.match.nw_proto = 6 #TCP
+            msg.match.nw_src = srcip
+            msg.match.nw_dst = dstip
+            msg.match.tp_src = src_port
+            msg.match.tp_dst = dst_port
+            msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
+            msg.actions.append(of.ofp_action_tp_port.set_src(NATport))
+            msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+            msg.actions.append(of.ofp_action_dl_addr.set_dst(PUBLIC_GW_MAC))
+            msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+            msg.idle_timeout = 10
+            msg.hard_timeout = 30
+            event.connection.send(msg)
+            return
         if inbound:
           if ippacket.protocol == ipv4.ICMP_PROTOCOL:
+            # Still has to manually send out packets due to reliance on ICMP ID.
             id = pkt.find('icmp').payload.id
             realdst = ICMP[id]
             for t in routeTable[PUBLIC_DPID]:
@@ -290,8 +330,54 @@ class routerConnection(object):
             event.connection.send(msg)
             return
           else:
-            log.info(f"Inbound NAT {srcip} -> {dstip}")
-          return
+            udp_pkt = packet.find('udp')
+            tcp_pkt = packet.find('tcp')
+            if udp_pkt:
+              src_port = udp_pkt.srcport
+              dst_port = udp_pkt.dstport
+            elif tcp_pkt:
+              src_port = tcp_pkt.srcport
+              dst_port = tcp_pkt.dstport
+            else:
+              return
+            revNAT = NAT[dst_port]
+            if revNAT is None:
+              log.info(f"No NAT connection was logged for port {dst_port}")
+              return
+            log.info(f"Inbound NAT {srcip}:{src_port} -> {revNAT[0]}:{revNAT[1]}")
+            realdst = revNAT[0]
+            realport = revNAT[1]
+            for t in routeTable[PUBLIC_DPID]:
+              dstnetwork = t[rDST_NETWORK]
+              if realdst.inNetwork(dstnetwork):
+                nh_port = t[rNEXTHOP_PORT]
+                if nh_port == event.ofp.in_port:
+                  return
+                # Gateway so we forgo direct connect check
+                nh_ip = IPAddr(t[rNEXTHOP_IP])
+                nh_port_ip = IPAddr(t[rNEXTHOP_PORT_IP])
+                nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
+                nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
+                break
+            msg = of.ofp_flow_mod()
+            msg.match.dl_type = 0x0800 #ipv4
+            if udp_pkt:
+              msg.match.nw_proto = 17 #UDP
+            else:
+              msg.match.nw_proto = 6 #TCP
+            msg.match.nw_src = srcip
+            msg.match.nw_dst = dstip
+            msg.match.tp_src = src_port
+            msg.match.tp_dst = dst_port
+            msg.actions.append(of.ofp_action_nw_addr.set_dst(realdst))
+            msg.actions.append(of.ofp_action_tp_port.set_dst(realport))
+            msg.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+            msg.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+            msg.actions.append(of.ofp_action_output(port=nh_port))
+            msg.idle_timeout = 10
+            msg.hard_timeout = 30
+            event.connection.send(msg)
+            return
       # 搜索路由表
       for t in routeTable[dpid]:
         # 路由表项中的网络前缀
@@ -323,6 +409,7 @@ class routerConnection(object):
             # 匹配
             msg1.match = of.ofp_match()
             msg1.match.dl_type = ethernet.IP_TYPE
+            msg1.match.nw_src = srcip
             msg1.match.nw_dst = dstip
             # Flow actions
             msg1.command = 0
