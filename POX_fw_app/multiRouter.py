@@ -359,23 +359,27 @@ class routerConnection(object):
                 nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
                 nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
                 break
+            log.info(f"Go from {nh_port_ip} to {nh_ip}. {nh_mac_src} -> {nh_mac_dst} on port {nh_port}")
             msg = of.ofp_flow_mod()
+            msg.match = of.ofp_match()
             msg.match.dl_type = 0x0800 #ipv4
             if udp_pkt:
               msg.match.nw_proto = 17 #UDP
             else:
               msg.match.nw_proto = 6 #TCP
             msg.match.nw_src = srcip
-            msg.match.nw_dst = dstip
+            msg.match.nw_dst = PUBLIC_IP
             msg.match.tp_src = src_port
             msg.match.tp_dst = dst_port
+            msg.buffer_id = event.ofp.buffer_id
             msg.actions.append(of.ofp_action_nw_addr.set_dst(realdst))
             msg.actions.append(of.ofp_action_tp_port.set_dst(realport))
             msg.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
             msg.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
             msg.actions.append(of.ofp_action_output(port=nh_port))
-            msg.idle_timeout = 10
+            msg.idle_timeout = 15
             msg.hard_timeout = 30
+            log.info(f"{msg}")
             event.connection.send(msg)
             return
       # 搜索路由表
