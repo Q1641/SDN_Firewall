@@ -64,7 +64,10 @@ PUBLIC_PORT=3 #ens33
 PUBLIC_MAC=EthAddr("00:00:00:00:00:01")
 PUBLIC_DPID=1
 PUBLIC_GW_MAC=EthAddr('00:50:56:ed:8a:b4')
+# ICMP['id'] = dst IP
 ICMP = {}
+# UDP['src']['dst'] = last src port
+UDP = {}
 # NAT key + buffer = port number
 # NAT[public_port - BUFFER] = (IP,src port)
 BUFFER = 50000
@@ -128,7 +131,15 @@ class routerConnection(object):
   # 流删除消息
   def _handle_FlowRemoved(self,event):
     dpid = event.connection.dpid
-    log.info(f"dpid={dpid} : Flow removed")
+    match = event.ofp.match  # the match structure
+    dst_ip = match.nw_dst    # IPv4 destination
+    dst_port = match.tp_dst  # TCP/UDP destination port
+    log.info(f"dpid={dpid} : NAT removed port {dst_port}")
+    try:
+      if dst_ip == PUBLIC_IP:
+        NAT[dst_port] = None
+    except:
+      return
 
   # PackerIn消息
   def _handle_PacketIn(self,event):
@@ -242,7 +253,6 @@ class routerConnection(object):
             id = pkt.find('icmp').payload.id
             ICMP[id] = srcip
             log.info(f"Outbound ICMP NAT {srcip} -> {dstip}")
-            log.info(f"ID: {id} -> {ICMP[id]}")
             msg = of.ofp_flow_mod()
             msg.match.in_port = event.ofp.in_port
             msg.match.dl_type = 0x0800  # IPv4
@@ -272,50 +282,64 @@ class routerConnection(object):
             except:
               NATport = NAT.index(None, BUFFER)
               NAT[NATport] = (srcip,src_port)
-            log.info(f"Translate {srcip}:{src_port} -> {PUBLIC_IP}:{NATport}")
-            msg = of.ofp_flow_mod()
-            msg1 = of.ofp_flow_mod()
-            msg.match.dl_type = 0x0800 #ipv4
-            msg1.match.dl_type = 0x0800
+            log.info(f"Translate {srcip}:{src_port} to {PUBLIC_IP}:{NATport} on connection to {dstip}:{dst_port}")
             if udp_pkt:
-              msg.match.nw_proto = 17 #UDP
-              msg1.match.nw_proto = 17
-            else:
+              UDP[(srcip,dstip)] = src_port
+              msg = of.ofp_flow_mod()
+              msg.match.dl_type = 0x0800
+              msg.match.nw_proto = 17
+              msg.match.nw_src = srcip
+              msg.match.nw_dst = dstip
+              msg.match.tp_src = src_port
+              msg.match.tp_dst = dst_port
+              msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
+              msg.actions.append(of.ofp_action_tp_port.set_src(NATport))
+              msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+              msg.actions.append(of.ofp_action_dl_addr.set_dst(PUBLIC_GW_MAC))
+              msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+              msg.idle_timeout = 10
+              event.connection.send(msg)
+            elif tcp_pkt:
+              msg = of.ofp_flow_mod()
+              msg1 = of.ofp_flow_mod()
+              msg.match.dl_type = 0x0800 #ipv4
+              msg1.match.dl_type = 0x0800
+              # Outbound flow
+              msg.match.nw_src = srcip
+              msg.match.nw_dst = dstip
+              # Inbound flow
+              msg1.match.nw_src = dstip
+              msg1.match.nw_dst = PUBLIC_IP
               msg.match.nw_proto = 6 #TCP
               msg1.match.nw_proto = 6
-            # Outbound flow
-            msg.match.nw_src = srcip
-            msg.match.nw_dst = dstip
-            # Inbound flow
-            msg1.match.nw_src = dstip
-            msg1.match.nw_dst = PUBLIC_IP
-            # Outbound flow
-            msg.match.tp_src = src_port
-            msg.match.tp_dst = dst_port
-            # Inbound flow
-            msg1.match.tp_src = dst_port
-            msg1.match.tp_dst = NATport
-            # Outbound flow
-            msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
-            msg.actions.append(of.ofp_action_tp_port.set_src(NATport))
-            # Inbound flow
-            msg1.actions.append(of.ofp_action_nw_addr.set_dst(srcip))
-            msg1.actions.append(of.ofp_action_tp_port.set_dst(src_port))
+              # Outbound flow
+              msg.match.tp_src = src_port
+              msg.match.tp_dst = dst_port
+              # Inbound flow
+              msg1.match.tp_src = dst_port
+              msg1.match.tp_dst = NATport
+              # Outbound flow
+              msg.actions.append(of.ofp_action_nw_addr.set_src(PUBLIC_IP))
+              msg.actions.append(of.ofp_action_tp_port.set_src(NATport))
+              # Inbound flow
+              msg1.actions.append(of.ofp_action_nw_addr.set_dst(srcip))
+              msg1.actions.append(of.ofp_action_tp_port.set_dst(src_port))
 
-            msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
-            msg.actions.append(of.ofp_action_dl_addr.set_dst(PUBLIC_GW_MAC))
-            msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
+              msg.actions.append(of.ofp_action_dl_addr.set_src(PUBLIC_MAC))
+              msg.actions.append(of.ofp_action_dl_addr.set_dst(PUBLIC_GW_MAC))
+              msg.actions.append(of.ofp_action_output(port=PUBLIC_PORT))
 
-            msg1.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
-            msg1.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
-            msg1.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+              msg1.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+              msg1.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
+              msg1.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+              msg1.flags = of.OFPFF_SEND_FLOW_REM
 
-            msg.idle_timeout = 10
-            msg1.idle_timeout = 10
+              msg.idle_timeout = 10
+              msg1.idle_timeout = 10
 
-            event.connection.send(msg)
-            event.connection.send(msg1)
-            return
+              event.connection.send(msg)
+              event.connection.send(msg1)
+              return
         if inbound:
           if ippacket.protocol == ipv4.ICMP_PROTOCOL:
             # Still has to manually send out packets due to reliance on ICMP ID.
@@ -381,27 +405,46 @@ class routerConnection(object):
                 nh_mac_src = arpTable[dpid][nh_port][nh_port_ip]
                 nh_mac_dst = arpTable[dpid][nh_port][nh_ip]
                 break
-            log.info(f"Go from {nh_port_ip} to {nh_ip}. {nh_mac_src} -> {nh_mac_dst} on port {nh_port}")
-            msg = of.ofp_flow_mod()
-            msg.match = of.ofp_match()
-            msg.match.dl_type = 0x0800 #ipv4
+            # log.info(f"Go from {nh_port_ip} to {nh_ip}. {nh_mac_src} -> {nh_mac_dst} on port {nh_port}")
             if udp_pkt:
-              msg.match.nw_proto = 17 #UDP
-            else:
+              log.info(f"DUMPING INTO LOCAL NET TO {realdst}:{UDP[(realdst,srcip)]}")
+              msg_ip = ipv4()
+              msg_ip.srcip = srcip
+              msg_ip.dstip = realdst
+              msg_ip.protocol = ipv4.UDP_PROTOCOL
+              msg_udp = udp()
+              msg_udp.srcport = src_port
+              msg_udp.dstport = UDP[(realdst, srcip)]
+              msg_udp.payload = udp_pkt.payload
+              msg_ip.payload = msg_udp
+              eth = ethernet()
+              eth.src = nh_mac_src
+              eth.dst = nh_mac_dst
+              eth.type = ethernet.IP_TYPE
+              eth.payload = msg_ip
+              msg = of.ofp_packet_out()
+              msg.data = eth.pack()
+              msg.actions.append(of.ofp_action_output(port=nh_port))
+              event.connection.send(msg)
+              return
+            elif tcp_pkt:
+              msg = of.ofp_flow_mod()
+              msg.match = of.ofp_match()
+              msg.match.dl_type = 0x0800 #ipv4
               msg.match.nw_proto = 6 #TCP
-            msg.match.nw_src = srcip
-            msg.match.nw_dst = PUBLIC_IP
-            msg.match.tp_src = src_port
-            msg.match.tp_dst = dst_port
-            msg.buffer_id = event.ofp.buffer_id
-            msg.actions.append(of.ofp_action_nw_addr.set_dst(realdst))
-            msg.actions.append(of.ofp_action_tp_port.set_dst(realport))
-            msg.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
-            msg.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
-            msg.actions.append(of.ofp_action_output(port=nh_port))
-            msg.idle_timeout = 15
-            event.connection.send(msg)
-            return
+              msg.match.nw_src = srcip
+              msg.match.nw_dst = PUBLIC_IP
+              msg.match.tp_src = src_port
+              msg.match.tp_dst = dst_port
+              msg.buffer_id = event.ofp.buffer_id
+              msg.actions.append(of.ofp_action_nw_addr.set_dst(realdst))
+              msg.actions.append(of.ofp_action_tp_port.set_dst(realport))
+              msg.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+              msg.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+              msg.actions.append(of.ofp_action_output(port=nh_port))
+              msg.idle_timeout = 15
+              event.connection.send(msg)
+              return
       # 搜索路由表
       for t in routeTable[dpid]:
         # 路由表项中的网络前缀
@@ -434,39 +477,54 @@ class routerConnection(object):
             msg1 = of.ofp_flow_mod()
             msg2 = of.ofp_flow_mod()
             # 匹配
-            msg1.match = of.ofp_match()
-            msg2.match = of.ofp_match()
-            msg1.match.dl_type = ethernet.IP_TYPE
-            msg2.match.dl_type = ethernet.IP_TYPE
-            msg1.match.nw_proto = ip_pkt.protocol
-            msg2.match.nw_proto = ip_pkt.protocol
-            msg1.match.nw_src = srcip
-            msg2.match.nw_src = dstip
-            msg1.match.nw_dst = dstip
-            msg2.match.nw_dst = srcip
-            if tcp_pkt:
+            if udp_pkt:
+              log.info(f"Local {srcip}:{udp_pkt.srcport} -> {dstip}:{udp_pkt.dstport} send to {nh_port}")
+              msg_ip = ipv4()
+              msg_ip.srcip = srcip
+              msg_ip.dstip = dstip
+              msg_ip.protocol = ipv4.UDP_PROTOCOL
+              msg_udp = udp()
+              msg_udp.srcport = udp_pkt.srcport
+              msg_udp.dstport = udp_pkt.dstport
+              msg_udp.payload = udp_pkt.payload
+              msg_ip.payload = msg_udp
+              eth = ethernet()
+              eth.src = nh_mac_src
+              eth.dst = nh_mac_dst
+              eth.type = ethernet.IP_TYPE
+              eth.payload = msg_ip
+              msg = of.ofp_packet_out()
+              msg.data = eth.pack()
+              msg.actions.append(of.ofp_action_output(port=nh_port))
+              event.connection.send(msg)
+            elif tcp_pkt:
+              msg1.match = of.ofp_match()
+              msg2.match = of.ofp_match()
+              msg1.match.dl_type = ethernet.IP_TYPE
+              msg2.match.dl_type = ethernet.IP_TYPE
+              msg1.match.nw_proto = ip_pkt.protocol
+              msg2.match.nw_proto = ip_pkt.protocol
+              msg1.match.nw_src = srcip
+              msg2.match.nw_src = dstip
+              msg1.match.nw_dst = dstip
+              msg2.match.nw_dst = srcip
               msg1.match.tp_src = tcp_pkt.srcport
               msg2.match.tp_src = tcp_pkt.dstport
               msg1.match.tp_dst = tcp_pkt.dstport
               msg2.match.tp_dst = tcp_pkt.srcport
-            elif udp_pkt:
-              msg1.match.tp_src = udp_pkt.srcport
-              msg2.match.tp_src = udp_pkt.dstport
-              msg1.match.tp_dst = udp_pkt.dstport
-              msg2.match.tp_dst = udp_pkt.srcport
-            # Flow actions
-            msg1.idle_timeout = 10
-            msg2.idle_timeout = 10
-            # msg1.buffer_id = event.ofp.buffer_id
-            msg1.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
-            msg1.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
-            msg1.actions.append(of.ofp_action_output(port=nh_port))
-            msg2.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
-            msg2.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
-            msg2.actions.append(of.ofp_action_output(port=event.ofp.in_port))
-            event.connection.send(msg1)
-            event.connection.send(msg2)
-            log.debug('###Add a flow###')
+              # Flow actions
+              msg1.idle_timeout = 10
+              msg2.idle_timeout = 10
+              # msg1.buffer_id = event.ofp.buffer_id
+              msg1.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+              msg1.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+              msg1.actions.append(of.ofp_action_output(port=nh_port))
+              msg2.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+              msg2.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
+              msg2.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+              event.connection.send(msg1)
+              event.connection.send(msg2)
+              log.debug('###Add a flow###')
 
           # 若下一跳目的主机的mac未知，发送arp请求，并广播ip包
           else:
