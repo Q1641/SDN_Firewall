@@ -1,6 +1,9 @@
 from pox.core import core
 import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import EventHalt
+import json
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 log = core.getLogger()
 
@@ -25,5 +28,48 @@ class Firewall:
 			return EventHalt
 		return
 
+class SimpleHandler(BaseHTTPRequestHandler):
+	def do_GET(self):
+		self.send_response(200)
+		self.send_header("Content-type", "text/plain")
+		self.end_headers()
+		self.wfile.write(b"Hello from POX HTTP server!\n")
+
+	def do_POST(self):
+		client_ip = self.client_address[0]
+		if client_ip != "10.10.0.10":
+			log.warn("Rejected POST from unauthorized IP: %s", client_ip)
+			self.send_response(403)  # Forbidden
+			self.end_headers()
+			return
+		try:
+			# Read and parse the body
+			length = int(self.headers.get('Content-Length', 0))
+			raw_data = self.rfile.read(length).decode("utf-8")
+			data = json.loads(raw_data)
+			user = data.get("user")
+			ip = data.get("ip")
+			log.info("Accepted POST from %s: user=%s, ip=%s", client_ip, user, ip)
+			self.send_response(200)
+			self.end_headers()
+		except Exception as e:
+			log.error("Error handling POST from %s: %s", client_ip, e)
+			self.send_response(400)
+			self.end_headers()
+
+	def log_message(self, format, *args):
+		# Silence default HTTP logging
+		return
+
+def start_http_server():
+	server = HTTPServer(("0.0.0.0", 8000), SimpleHandler)
+	log.info("Starting HTTP server on port %s", 8000)
+	server.serve_forever()
+
 def launch():
 	core.registerNew(Firewall)
+	t = threading.Thread(target=start_http_server)
+	t.daemon = True
+	t.start()
+
+	log.info("Webserver module launched (HTTP on port %s)", 8000)

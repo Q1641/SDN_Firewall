@@ -28,7 +28,8 @@ portToIP[1] = {
 portToIP[2] = {
     1: "10.10.0.2",    # ens34
     2: "10.0.0.3",     # veth_intra2
-    3: "10.0.0.4"      # veth_intra3
+    3: "10.0.0.4",     # veth_intra3
+    4: "10.10.10.1"     # veth_intra4
 }
 
 # DPID 3: SvrFarm
@@ -46,6 +47,7 @@ routeTable = {
   ],
 
   2: [  # Intranet (DPID 2)
+    ['10.10.10.0/24', '0.0.0.0', 4, '10.10.10.1', 4],
     ['10.10.0.0/16', '0.0.0.0',  1,      '10.10.0.2', 1],  # Direct
     ['10.20.0.0/16', '10.0.0.5', 2, '10.0.0.3', 2],  # via SvrFarm
     ['0.0.0.0/0',     '10.0.0.1', 3, '10.0.0.4', 3]  # via InternetOut
@@ -134,7 +136,7 @@ class routerConnection(object):
     match = event.ofp.match  # the match structure
     dst_ip = match.nw_dst    # IPv4 destination
     dst_port = match.tp_dst  # TCP/UDP destination port
-    log.info(f"dpid={dpid} : NAT removed port {dst_port}")
+    # log.info(f"dpid={dpid} : NAT removed port {dst_port}")
     try:
       if dst_ip == PUBLIC_IP:
         NAT[dst_port] = None
@@ -252,7 +254,7 @@ class routerConnection(object):
             # No revese NAT because flow cannot match ICMP ID
             id = pkt.find('icmp').payload.id
             ICMP[id] = srcip
-            log.info(f"Outbound ICMP NAT {srcip} -> {dstip}")
+            # log.info(f"Outbound ICMP NAT {srcip} -> {dstip}")
             msg = of.ofp_flow_mod()
             msg.match.in_port = event.ofp.in_port
             msg.match.dl_type = 0x0800  # IPv4
@@ -282,7 +284,7 @@ class routerConnection(object):
             except:
               NATport = NAT.index(None, BUFFER)
               NAT[NATport] = (srcip,src_port)
-            log.info(f"Translate {srcip}:{src_port} to {PUBLIC_IP}:{NATport} on connection to {dstip}:{dst_port}")
+            # log.info(f"Translate {srcip}:{src_port} to {PUBLIC_IP}:{NATport} on connection to {dstip}:{dst_port}")
             if udp_pkt:
               UDP[(srcip,dstip)] = src_port
               msg = of.ofp_flow_mod()
@@ -388,9 +390,9 @@ class routerConnection(object):
               return
             revNAT = NAT[dst_port]
             if revNAT is None:
-              log.info(f"No NAT connection was logged for port {dst_port}")
+              # log.info(f"No NAT connection was logged for port {dst_port}")
               return
-            log.info(f"Inbound NAT {srcip}:{src_port} -> {revNAT[0]}:{revNAT[1]}")
+            # log.info(f"Inbound NAT {srcip}:{src_port} -> {revNAT[0]}:{revNAT[1]}")
             realdst = revNAT[0]
             realport = revNAT[1]
             for t in routeTable[PUBLIC_DPID]:
@@ -407,7 +409,7 @@ class routerConnection(object):
                 break
             # log.info(f"Go from {nh_port_ip} to {nh_ip}. {nh_mac_src} -> {nh_mac_dst} on port {nh_port}")
             if udp_pkt:
-              log.info(f"DUMPING INTO LOCAL NET TO {realdst}:{UDP[(realdst,srcip)]}")
+              # log.info(f"DUMPING INTO LOCAL NET TO {realdst}:{UDP[(realdst,srcip)]}")
               msg_ip = ipv4()
               msg_ip.srcip = srcip
               msg_ip.dstip = realdst
@@ -455,6 +457,7 @@ class routerConnection(object):
 
           # 找到对应的下一跳信息
           nh_port = t[rNEXTHOP_PORT]
+          log.debug(f"{nh_port}")
           if nh_port == event.ofp.in_port:
             return # 应该下达丢包动作
           nh_ip = IPAddr(t[rNEXTHOP_IP])
@@ -473,12 +476,13 @@ class routerConnection(object):
             ip_pkt = packet.find('ipv4')
             tcp_pkt = packet.find('tcp')
             udp_pkt = packet.find('udp')
+            icmp_pkt = packet.find('icmp')
             # 下发流表
             msg1 = of.ofp_flow_mod()
             msg2 = of.ofp_flow_mod()
             # 匹配
             if udp_pkt:
-              log.info(f"Local {srcip}:{udp_pkt.srcport} -> {dstip}:{udp_pkt.dstport} send to {nh_port}")
+              # log.info(f"Local {srcip}:{udp_pkt.srcport} -> {dstip}:{udp_pkt.dstport} send to {nh_port}")
               msg_ip = ipv4()
               msg_ip.srcip = srcip
               msg_ip.dstip = dstip
@@ -525,6 +529,29 @@ class routerConnection(object):
               event.connection.send(msg1)
               event.connection.send(msg2)
               log.debug('###Add a flow###')
+            elif icmp_pkt:
+              msg1.match = of.ofp_match()
+              msg2.match = of.ofp_match()
+              msg1.match.dl_type = ethernet.IP_TYPE
+              msg2.match.dl_type = ethernet.IP_TYPE
+              msg1.match.nw_proto = 1 # ICMP
+              msg2.match.nw_proto = 1 # ICMP
+              msg1.match.nw_src = srcip
+              msg2.match.nw_src = dstip
+              msg1.match.nw_dst = dstip
+              msg2.match.nw_dst = srcip
+              # Flow actions
+              msg1.idle_timeout = 10
+              msg2.idle_timeout = 10
+              # msg1.buffer_id = event.ofp.buffer_id
+              msg1.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+              msg1.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+              msg1.actions.append(of.ofp_action_output(port=nh_port))
+              msg2.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+              msg2.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
+              msg2.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+              event.connection.send(msg1)
+              event.connection.send(msg2)
 
           # 若下一跳目的主机的mac未知，发送arp请求，并广播ip包
           else:
