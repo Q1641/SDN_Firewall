@@ -7,7 +7,7 @@ def launch():
 	launch()
 	from firewall import launch
 	launch()
-	# from NAT import launch
-	# launch()
+	from dns_proxy import launch
+	launch()
 	from multiRouter import launch
 	launch()

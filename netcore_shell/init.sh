@@ -58,10 +58,12 @@ cleanup() {
   ip link del "$VETH_MGMT_H" 2>/dev/null || true
 
   ip netns del "$NS" 2>/dev/null || true
+  iptables -t nat -D POSTROUTING -s 10.99.0.0/30 -o ens32 -j MASQUERADE || true
   set -e
 }
 trap cleanup EXIT
 
+sysctl -w net.ipv4.ip_forward=1
 echo "=== Building 3-bridge lab with controller in a namespace ==="
 
 # Ensure OVS is up
@@ -138,12 +140,13 @@ ip netns exec "$NS" ip link set "$VETH_MGMT_N" up
 ip addr add "$MGMT_HOST_IP" dev "$VETH_MGMT_H"
 ip netns exec "$NS" ip addr add "$MGMT_NS_IP" dev "$VETH_MGMT_N"
 
-# Optional: default in ns via host (not strictly needed for controller)
-# ip netns exec "$NS" ip route add default via 10.99.0.1
 ip netns exec "$NS" ip addr add 10.10.10.10/24 dev veth_ns
 ip netns exec "$NS" ip link set veth_ns up
 ip netns exec "$NS" ip link set lo up
-ip netns exec "$NS" ip route add default via 10.10.10.1
+ip netns exec "$NS" ip route del default || true
+ip netns exec "$NS" ip route replace 10.0.0.0/8 via 10.10.10.1 dev "$VETH_NS"
+ip netns exec "$NS" ip route add default via 10.99.0.1 dev "$VETH_MGMT_N"
+iptables -t nat -A POSTROUTING -s 10.99.0.0/30 -o ens32 -j MASQUERADE
 
 ## Point all bridges to controller (over mgmt veth)
 ovs-vsctl set-controller "$BR_OUT" tcp:"$CTRL_IP":"$CTRL_PORT"

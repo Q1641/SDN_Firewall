@@ -201,8 +201,11 @@ class routerConnection(object):
       # 目的ip
       srcip = ippacket.srcip
       dstip = ippacket.dstip
-      if srcip not in arpTable[dpid][event.ofp.in_port]:
-        arpTable[dpid][event.ofp.in_port][srcip] = packet.src
+      try:
+        if srcip not in arpTable[dpid][event.ofp.in_port]:
+          arpTable[dpid][event.ofp.in_port][srcip] = packet.src
+      except:
+        pass
       # 查找端口映射表，判断目的ip是否为路由器本身,回应icmp echo reply
       for t in portTable[dpid]:
         selfip = t[pPORT_IP]

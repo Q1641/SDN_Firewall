@@ -7,6 +7,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 log = core.getLogger()
 
+# USER_IP[IP] = USER
+USER_IP = {}
+# USER_GROUP[USER] = GROUPS (list of group names)
+USER_GROUP = {}
+
+class Policy:
+	def __init__(self):
+		pass
+
 class Firewall:
 	def __init__(self):
 		core.openflow.addListenerByName("PacketIn", self._handle_PacketIn, priority=10)
@@ -49,7 +58,8 @@ class SimpleHandler(BaseHTTPRequestHandler):
 			data = json.loads(raw_data)
 			user = data.get("user")
 			ip = data.get("ip")
-			log.info("Accepted POST from %s: user=%s, ip=%s", client_ip, user, ip)
+			groups = data.get("group")
+			log.info("Accepted POST from %s: user=%s, ip=%s, groups=%s", client_ip, user, ip, groups)
 			self.send_response(200)
 			self.end_headers()
 		except Exception as e:
