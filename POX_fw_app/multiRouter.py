@@ -486,24 +486,27 @@ class routerConnection(object):
             # 匹配
             if udp_pkt:
               # log.info(f"Local {srcip}:{udp_pkt.srcport} -> {dstip}:{udp_pkt.dstport} send to {nh_port}")
-              msg_ip = ipv4()
-              msg_ip.srcip = srcip
-              msg_ip.dstip = dstip
-              msg_ip.protocol = ipv4.UDP_PROTOCOL
-              msg_udp = udp()
-              msg_udp.srcport = udp_pkt.srcport
-              msg_udp.dstport = udp_pkt.dstport
-              msg_udp.payload = udp_pkt.payload
-              msg_ip.payload = msg_udp
-              eth = ethernet()
-              eth.src = nh_mac_src
-              eth.dst = nh_mac_dst
-              eth.type = ethernet.IP_TYPE
-              eth.payload = msg_ip
-              msg = of.ofp_packet_out()
-              msg.data = eth.pack()
-              msg.actions.append(of.ofp_action_output(port=nh_port))
-              event.connection.send(msg)
+              fm_fwd = of.ofp_flow_mod()
+              fm_fwd.idle_timeout = 15
+              fm_fwd.match.dl_type = 0x0800
+              fm_fwd.match.nw_proto = 17
+              fm_fwd.match.nw_src = ip_pkt.srcip
+              fm_fwd.match.nw_dst = ip_pkt.dstip
+              fm_fwd.actions.append(of.ofp_action_dl_addr.set_src(nh_mac_src))
+              fm_fwd.actions.append(of.ofp_action_dl_addr.set_dst(nh_mac_dst))
+              fm_fwd.actions.append(of.ofp_action_output(port=nh_port))
+              event.connection.send(fm_fwd)
+              # --- Reverse flow (reply direction) ---
+              fm_rev = of.ofp_flow_mod()
+              fm_rev.idle_timeout = 15
+              fm_rev.match.dl_type = 0x0800
+              fm_rev.match.nw_proto = 17
+              fm_rev.match.nw_src = ip_pkt.dstip
+              fm_rev.match.nw_dst = ip_pkt.srcip
+              fm_rev.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+              fm_rev.actions.append(of.ofp_action_dl_addr.set_dst(packet.src))
+              fm_rev.actions.append(of.ofp_action_output(port=event.ofp.in_port))
+              event.connection.send(fm_rev)
             elif tcp_pkt:
               msg1.match = of.ofp_match()
               msg2.match = of.ofp_match()

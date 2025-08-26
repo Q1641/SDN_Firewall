@@ -16,7 +16,7 @@ from pox.core import core
 
 log = core.getLogger()
 
-BIND_ADDR = ("0.0.0.0", 53)  # <-- your chosen IP
+BIND_ADDR = ("10.10.10.10", 53)  # <-- your chosen IP
 UPSTREAM_ADDR = ("8.8.8.8", 53)
 BUF_SIZE = 4096
 TIMEOUT = 3.0
