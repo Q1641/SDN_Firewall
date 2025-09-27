@@ -3,6 +3,7 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.revent import EventHalt
 from pox.lib.addresses import IPAddr, EthAddr
 import json
+import psycopg2
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -102,10 +103,47 @@ class Policy:
 			return [False, None]
 		return [False, None]
 
+def load_policies():
+	conn = psycopg2.connect(
+		dbname="SDNfw",
+		user="srv_acc",
+		password="root123",
+		host="10.99.0.1",
+		port=5432
+	)
+	cur = conn.cursor()
+	cur.execute("""
+		SELECT name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule FROM policy
+		WHERE disabled = FALSE AND (schedule IS NULL OR schedule >= CURRENT_DATE);
+	""")
+	policies = []
+	for row in cur.fetchall():
+		name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule = row
+		srcip = srcip or []
+		srcuser = srcuser or []
+		dstip = dstip or []
+		tcp_ports = tcp_ports or []
+		udp_ports = udp_ports or []
+		policy = Policy(
+			name=name,
+			srcip=srcip,
+			srcuser=srcuser,
+			dstip=dstip,
+			tcp=tcp_ports,
+			udp=udp_ports,
+			icmp=icmp,
+			action=action
+		)
+		policies.append(policy)
+
+	cur.close()
+	conn.close()
+	return policies
+
 class Firewall:
 	def __init__(self):
 		core.openflow.addListenerByName("PacketIn", self._handle_PacketIn, priority=10)
-		self.policies = []
+		self.policies = load_policies()
 		# Policies
 		# Value (by fields)
 		# 0: Policy name
@@ -116,11 +154,11 @@ class Firewall:
 		# udp/tcp: list of udp/tcp port. default is empty
 		# icmp: boolean. True if icmp is permitted. default is False
 		# action: boolean. False if deny policy. default is True
-		self.policies.append(Policy("All_to_DNS", [], [], ["10.10.10.10"], udp = [53], icmp=True))
-		self.policies.append(Policy("AD_to_Ctrl", ["10.10.0.10"], [], ["10.10.10.10"], tcp = [8000]))
-		self.policies.append(Policy("Usr_to_Cloudfare", [], ["johndoe"], ["1.1.1.1"], tcp = [80], icmp=True))
-		self.policies.append(Policy("Usr_to_DNSggl", [], ["Domain Users"], ["8.8.8.8", "8.8.4.4"], icmp=True))
-		self.policies.append(Policy("Inbound ICMP", [], [], ["192.168.230.155"], icmp=True))
+		# self.policies.append(Policy("All_to_DNS", [], [], ["10.10.10.10"], udp = [53], icmp=True))
+		# self.policies.append(Policy("AD_to_Ctrl", ["10.10.0.10"], [], ["10.10.10.10"], tcp = [8000]))
+		# self.policies.append(Policy("Usr_to_Cloudfare", [], ["johndoe"], ["1.1.1.1"], tcp = [80], icmp=True))
+		# self.policies.append(Policy("Usr_to_DNSggl", [], ["Domain Users"], ["8.8.8.8", "8.8.4.4"], icmp=True))
+		# self.policies.append(Policy("Inbound ICMP", [], [], ["192.168.230.155"], icmp=True))
 
 	def _handle_PacketIn(self, event):
 		allowed = False
