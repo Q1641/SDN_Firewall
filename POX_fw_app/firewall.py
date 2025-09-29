@@ -6,6 +6,16 @@ import json
 import psycopg2
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from flask import Flask, request, jsonify, session
+from psycopg2.extras import RealDictCursor
+from werkzeug.security import check_password_hash
+import os
+import logging
+
+# Suppress all logging except POX
+logging.getLogger('werkzeug').disabled = True   # disable werkzeug logs
+logging.getLogger('flask').disabled = True      # disable flask logs
+logging.getLogger('flask.cli').disabled = True  # disable startup banner
 
 log = core.getLogger()
 
@@ -144,21 +154,6 @@ class Firewall:
 	def __init__(self):
 		core.openflow.addListenerByName("PacketIn", self._handle_PacketIn, priority=10)
 		self.policies = load_policies()
-		# Policies
-		# Value (by fields)
-		# 0: Policy name
-		# 1: Policy srcIP. If empty = any
-		# 2: Policy srcUser/AD group. If empty = any
-		# 3: Policy destIP. If empty = any.
-		# Customizable fields:
-		# udp/tcp: list of udp/tcp port. default is empty
-		# icmp: boolean. True if icmp is permitted. default is False
-		# action: boolean. False if deny policy. default is True
-		# self.policies.append(Policy("All_to_DNS", [], [], ["10.10.10.10"], udp = [53], icmp=True))
-		# self.policies.append(Policy("AD_to_Ctrl", ["10.10.0.10"], [], ["10.10.10.10"], tcp = [8000]))
-		# self.policies.append(Policy("Usr_to_Cloudfare", [], ["johndoe"], ["1.1.1.1"], tcp = [80], icmp=True))
-		# self.policies.append(Policy("Usr_to_DNSggl", [], ["Domain Users"], ["8.8.8.8", "8.8.4.4"], icmp=True))
-		# self.policies.append(Policy("Inbound ICMP", [], [], ["192.168.230.155"], icmp=True))
 
 	def _handle_PacketIn(self, event):
 		allowed = False
@@ -187,52 +182,118 @@ class Firewall:
 			return EventHalt
 		log.info(f"Permit Traffic from: {ipv4h.srcip} -> {ipv4h.dstip}; matching rule: {matching_rule}")
 		return
+### FLASK UPDATE IP API ###
+user_ip_api = Flask('user_ip_api')
+@user_ip_api.route("/", methods=["POST"])
+def update_ip():
+		data = request.get_json(force=True)
+		user = data.get("user")
+		ip = data.get("ip")
+		groups = data.get("group")
 
-class SimpleHandler(BaseHTTPRequestHandler):
-	def do_GET(self):
-		self.send_response(200)
-		self.send_header("Content-type", "text/plain")
-		self.end_headers()
-		self.wfile.write(b"Hello from POX HTTP server!\n")
+		log.info("Accepted POST: user=%s, ip=%s, groups=%s", user, ip, groups)
 
-	def do_POST(self):
-		try:
-			# Read and parse the body
-			length = int(self.headers.get('Content-Length', 0))
-			raw_data = self.rfile.read(length).decode("utf-8")
-			data = json.loads(raw_data)
-			user = data.get("user")
-			ip = data.get("ip")
-			groups = data.get("group")
-			log.info("Accepted POST: user=%s, ip=%s, groups=%s",user, ip, groups)
-			if not USER_IP.get(IPAddr(ip)):
-				for connection in core.openflow._connections.values():
-					fm = of.ofp_flow_mod()
-					fm.command = of.OFPFC_DELETE
-					fm.match.dl_type = 0x0800  # IPv4 Ethertype
-					fm.match.nw_src = IPAddr(ip)
-					connection.send(fm)
-			USER_IP[IPAddr(ip)] = user
-			USER_GROUP[user] = groups
-			self.send_response(200)
-			self.end_headers()
-		except Exception as e:
-			log.error("Error handling POST from %s: %s", client_ip, e)
-			self.send_response(400)
-			self.end_headers()
+		if USER_IP.get(IPAddr(ip)) is not None:
+			# User-IP mapping unchanged
+			if USER_IP[IPAddr(ip)] == user:
+				return jsonify({"status": "ok"}), 200
+			# Remove old flows for this IP
+			for connection in core.openflow._connections.values():
+				fm = of.ofp_flow_mod()
+				fm.command = of.OFPFC_DELETE
+				fm.match.dl_type = 0x0800  # IPv4 Ethertype
+				fm.match.nw_src = IPAddr(ip)
+				connection.send(fm)
 
-	def log_message(self, format, *args):
-		# Silence default HTTP logging
-		return
+		USER_IP[IPAddr(ip)] = user
+		USER_GROUP[user] = groups
+		return jsonify({"status": "ok"}), 200
 
-def start_http_server():
-	server = HTTPServer(("0.0.0.0", 8000), SimpleHandler)
-	log.info("Starting HTTP server on port %s", 8000)
-	server.serve_forever()
+### FLASK WEBAPP ###
+ctrl_app = Flask('ctrl_app')
+ctrl_app.secret_key = os.urandom(24)
+
+# Database connection config
+DB_CONFIG = {
+    "dbname": "SDNfw",
+    "user": "srv_acc",
+    "password": "root123",
+    "host": "10.99.0.1",
+    "port": 5432
+}
+
+
+def get_db_connection():
+    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
+
+
+@ctrl_app.route("/login", methods=["POST"])
+def login():
+	data = request.get_json(force=True)
+	username = data.get("username")
+	password = data.get("password")
+
+	if not username or not password:
+		return jsonify({"error": "Missing username or password"}), 400
+
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor()
+		cur.execute("SELECT username, password_hash FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		cur.close()
+		conn.close()
+
+		if not user:
+			return jsonify({"error": "Invalid credentials"}), 401
+
+		# Check password using hashed password
+		if check_password_hash(user["password_hash"], password):
+			session["username"] = user["username"]
+			return jsonify({"message": "Login successful"})
+		else:
+			return jsonify({"error": "Invalid credentials"}), 401
+	except Exception as e:
+		return jsonify({"error": str(e)}), 500
+
+
+@ctrl_app.route("/whoami", methods=["GET"])
+def getID():
+	username = session.get("username")
+	if username:
+		return jsonify({"username": username})
+	else:
+		return jsonify({"error": "Not logged in"}), 401
+
+@ctrl_app.route("/list_policies", methods=["POST"])
+def list_policy():
+	pass
+
+@ctrl_app.route("/delete_policy", methods=["DELETE"])
+def del_policy():
+	pass
+
+@ctrl_app.route("/create_policy", methods=["POST"])
+def create_policy():
+	pass
+
+@ctrl_app.route("/edit_policy", methods=["POST"])
+def edit_policy():
+	pass
 
 def launch():
 	core.registerNew(Firewall)
-	t = threading.Thread(target=start_http_server)
-	t.daemon = True
-	t.start()
-	log.info("Webserver module launched (HTTP on port %s)", 8000)
+	# Flask server runner
+	def run_flask(app, port):
+		log.info("Starting Flask app on port %s", port)
+		app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
+	t1 = threading.Thread(target=run_flask, args=(ctrl_app, 8000))
+	t2 = threading.Thread(target=run_flask, args=(user_ip_api, 21012))
+
+	t1.daemon = True
+	t2.daemon = True
+
+	t1.start()
+	t2.start()
+
+	log.info("Launched 2 Flask apps: ctrl_app@8080, user_ip_api@21012")
