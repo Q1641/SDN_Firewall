@@ -12,7 +12,6 @@ from werkzeug.security import check_password_hash
 import os
 import logging
 
-# Suppress all logging except POX
 logging.getLogger('werkzeug').disabled = True   # disable werkzeug logs
 logging.getLogger('flask').disabled = True      # disable flask logs
 logging.getLogger('flask.cli').disabled = True  # disable startup banner
@@ -33,23 +32,22 @@ class Policy:
 	# udp: list of int -> dst UDP port
 	# icmp: boolean
 	# action: boolean
-	def __init__(self, name="", srcip=[], srcuser=[], dstip=[], tcp=[], udp=[], icmp=False, action=True):
+	def __init__(self, id, name="", srcip=[], srcuser=[], dstip=[], tcp=[], udp=[], icmp=False, action=True):
 		self.name = name
 		self.src = [srcip, srcuser]
 		self.dst = dstip
 		self.port = [tcp, udp, icmp]
 		self.action = action
+		self.id=id
 
 	# return true if:
 	# - list is empty => any ip
 	# - ip is in the list
 	def _match_ip(self, ip, list):
 		if not list:
-			# print(f"{self.name}: {ip} matched any")
 			return True
 		for _ip in list:
 			if ip.inNetwork(_ip):
-				# print(f"{self.name}: {ip} matched {_ip}")
 				return True
 		return False
 	
@@ -59,32 +57,25 @@ class Policy:
 	# - user is explicitly in the rule
 	def _match_usr(self, ip):
 		if not self.src[1]:
-			# print(f"{self.name}: policy allowed all users")
 			return True
 		if not USER_IP.get(IPAddr(ip)):
-			# print(f"{self.name}: no user found!")
 			return False
 		usr = USER_IP[IPAddr(ip)]
 		grps = USER_GROUP[usr]
 		if usr in self.src[1]:
-			# print(f"{self.name}: {usr} directly matched")
 			return True
 		for _usr in self.src[1]:
 			if _usr in grps:
-				# print(f"{self.name}: {usr} matched {_user}")
 				return True
 		return False
 
 	# check matching protocol & port
 	def _match_service(self, proto, port):
 		if proto == 1: #ICMP
-			# print(f"{self.name}: ICMP: {self.port[2]}")
 			return self.port[2]
 		if proto == 6: #TCP
-			# print(f"{self.name}: port {port} TCP: {port in self.port[0]}")
 			return port in self.port[0]
 		if proto == 17: #UDP
-			# print(f"{self.name}: port {port} UDP: {port in self.port[1]}")
 			return port in self.port[1]
 		return False
 
@@ -123,18 +114,19 @@ def load_policies():
 	)
 	cur = conn.cursor()
 	cur.execute("""
-		SELECT name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule FROM policy
-		WHERE disabled = FALSE AND (schedule IS NULL OR schedule >= CURRENT_DATE);
+		SELECT id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule FROM policy
+		WHERE disabled = FALSE AND (schedule IS NULL OR schedule >= CURRENT_DATE) ORDER BY order_index;
 	""")
 	policies = []
 	for row in cur.fetchall():
-		name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule = row
+		id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule = row
 		srcip = srcip or []
 		srcuser = srcuser or []
 		dstip = dstip or []
 		tcp_ports = tcp_ports or []
 		udp_ports = udp_ports or []
 		policy = Policy(
+			id,
 			name=name,
 			srcip=srcip,
 			srcuser=srcuser,
@@ -265,17 +257,123 @@ def getID():
 	else:
 		return jsonify({"error": "Not logged in"}), 401
 
-@ctrl_app.route("/list_policies", methods=["POST"])
+@ctrl_app.route("/list_policies", methods=["GET"])
 def list_policy():
-	pass
+	"""
+	Return all firewall policies as JSON list.
+	"""
+	username = session.get("username")
+	if not username:
+		return jsonify({"error": "Not logged in"}), 401
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor()
+		cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_view"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Forbidden"}), 403
+		cur.execute("SELECT * FROM policy ORDER BY order_index ASC;")
+		policies = cur.fetchall()
+		cur.close()
+		conn.close()
+		return jsonify(policies), 200
+	except Exception as e:
+		return jsonify({"error": str(e)}), 500
 
 @ctrl_app.route("/delete_policy", methods=["DELETE"])
 def del_policy():
-	pass
+	username = session.get("username")
+	if not username:
+		return jsonify({"error": "Not logged in"}), 401
+
+	data = request.get_json(force=True)
+	policy_id = data.get("id")
+	if not policy_id:
+		return jsonify({"error": "Missing policy ID"}), 400
+
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor()
+		cur.execute("SELECT policy_mgmt FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_mgmt"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Forbidden"}), 403
+		cur.execute("DELETE FROM policy WHERE id = %s RETURNING id", (policy_id,))
+		deleted = cur.fetchone()
+		conn.commit()
+		cur.close()
+		conn.close()
+		if deleted:
+			return jsonify({"message": f"Policy {policy_id} deleted"})
+		else:
+			return jsonify({"error": "Policy not found"}), 404
+	except Exception as e:
+		return jsonify({"error": str(e)}), 500
 
 @ctrl_app.route("/create_policy", methods=["POST"])
 def create_policy():
-	pass
+	username = session.get("username")
+	if not username:
+		return jsonify({"error": "Not logged in"}), 401
+
+	data = request.get_json(force=True)
+
+	# Required fields
+	name = data.get("name")
+	if not name:
+		return jsonify({"error": "Missing policy name"}), 400
+
+	# Optional fields with defaults
+	srcip = data.get("srcip", [])
+	srcuser = data.get("srcuser", [])
+	dstip = data.get("dstip", [])
+	tcp_ports = data.get("tcp_ports", [])
+	udp_ports = data.get("udp_ports", [])
+	icmp = data.get("icmp", False)
+	action = data.get("action", True)
+	disabled = data.get("disabled", False)
+	schedule = data.get("schedule")  # should be 'YYYY-MM-DD'
+	order_index = data.get("order_index")
+
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor()
+		cur.execute("SELECT policy_mgmt FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_mgmt"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Forbidden: no policy management privilege"}), 403
+		if order_index is None:
+			cur.execute("""
+				INSERT INTO policy
+				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule)
+				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s)
+				RETURNING id, order_index
+			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule))
+		else:
+			cur.execute("""
+				INSERT INTO policy 
+				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index)
+				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s, %s)
+				RETURNING id, order_index
+			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index))
+			new_policy = cur.fetchone()
+		conn.commit()
+		cur.close()
+		conn.close()
+
+		return jsonify({
+			"message": "Policy created successfully",
+			"id": new_policy["id"],
+		})
+
+	except Exception as e:
+		return jsonify({"error": str(e)}), 500
 
 @ctrl_app.route("/edit_policy", methods=["POST"])
 def edit_policy():
