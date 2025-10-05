@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firewall Login</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0e1726;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .login-container {
+            background: #1e293b;
+            padding: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(255,255,255,0.1);
+            width: 320px;
+        }
+        h2 {
+            text-align: center;
+            margin-bottom: 1rem;
+        }
+        label {
+            display: block;
+            margin-top: 1rem;
+        }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 0.5rem;
+            border-radius: 5px;
+            border: none;
+            margin-top: 0.3rem;
+        }
+        button {
+            width: 100%;
+            margin-top: 1.5rem;
+            padding: 0.7rem;
+            background: #2563eb;
+            border: none;
+            color: white;
+            font-weight: bold;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #1d4ed8;
+        }
+        #message {
+            margin-top: 1rem;
+            text-align: center;
+            color: #f87171;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h2>Firewall Login</h2>
+        <form id="loginForm">
+            <label for="username">Username:</label>
+            <input type="text" id="username" name="username" required>
+
+            <label for="password">Password:</label>
+            <input type="password" id="password" name="password" required>
+
+            <button type="submit">Login</button>
+        </form>
+        <div id="message"></div>
+    </div>
+
+    <!-- JavaScript -->
+    <script type="text/javascript">
+    document.addEventListener("DOMContentLoaded", function() {
+        var form = document.getElementById("loginForm");
+        var msg = document.getElementById("message");
+
+        form.addEventListener("submit", function(e) {
+            e.preventDefault();
+            msg.textContent = "";
+
+            var payload = {
+                username: document.getElementById("username").value,
+                password: document.getElementById("password").value
+            };
+
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", "/login", true);
+            xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status === 200) {
+                        try {
+                            var response = JSON.parse(xhr.responseText);
+                            window.location.href = "/dashboard";
+                        } catch (e) {
+                            msg.textContent = "Unexpected response from server.";
+                        }
+                    } else {
+                        try {
+                            var response = JSON.parse(xhr.responseText);
+                            msg.textContent = response.error || "Login failed.";
+                        } catch (e) {
+                            msg.textContent = "Login failed.";
+                        }
+                    }
+                }
+            };
+
+            xhr.onerror = function() {
+                msg.textContent = "Unable to connect to server.";
+            };
+
+            xhr.send(JSON.stringify(payload));
+        });
+    });
+    </script>
+</body>
+</html>

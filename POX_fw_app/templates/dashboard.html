@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SDN Firewall Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <h2>Welcome, {{ username }}</h2>
+    <a href="/logout">Logout</a>
+
+    <h3>Policies</h3>
+    <table border="1" id="policyTable">
+        <thead>
+            <tr><th>ID</th><th>Name</th><th>Src IP</th><th>Dst IP</th><th>Action</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <script>
+        async function loadPolicies() {
+            const res = await fetch("/list_policies");
+            const data = await res.json();
+            const tbody = document.querySelector("#policyTable tbody");
+            tbody.innerHTML = "";
+            data.forEach(p => {
+                const row = `<tr>
+                    <td>${p.id}</td>
+                    <td>${p.name}</td>
+                    <td>${p.srcip}</td>
+                    <td>${p.dstip}</td>
+                    <td>${p.action ? "ALLOW" : "DENY"}</td>
+                </tr>`;
+                tbody.insertAdjacentHTML("beforeend", row);
+            });
+        }
+        loadPolicies();
+    </script>
+</body>
+</html>

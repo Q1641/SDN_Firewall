@@ -6,7 +6,7 @@ import json
 import psycopg2
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session
 from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash
 import os
@@ -164,7 +164,6 @@ class Firewall:
 				allowed = res[1]
 				break
 		if not allowed:
-			# log.info(f"Blocked Traffic from: {ipv4h.srcip} -> {ipv4h.dstip}")
 			msg = of.ofp_flow_mod()
 			msg.match = of.ofp_match.from_packet(event.parsed)
 			msg.data = event.ofp
@@ -202,7 +201,13 @@ def update_ip():
 		return jsonify({"status": "ok"}), 200
 
 ### FLASK WEBAPP ###
-ctrl_app = Flask('ctrl_app')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+ctrl_app = Flask(
+	'ctrl_app',
+	template_folder=os.path.join(BASE_DIR, 'templates'),
+	static_folder=os.path.join(BASE_DIR, 'static')
+)
 ctrl_app.secret_key = os.urandom(24)
 
 # Database connection config
@@ -218,13 +223,43 @@ DB_CONFIG = {
 def get_db_connection():
     return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
+@ctrl_app.route("/")
+def index():
+	if "username" not in session:
+		return redirect(url_for("login_page"))
+	username = session["username"]
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor()
+		cur.execute("""SELECT user_mgmt, policy_mgmt, user_view, policy_view FROM users WHERE username = %s""", (username,))
+		user = cur.fetchone()
+		cur.close()
+		conn.close()
+
+		if not user:
+			return jsonify({"error": "User not found"}), 404
+
+		if user["user_mgmt"] or user["policy_mgmt"] or user["user_view"] or user["policy_view"]:
+			return redirect(url_for("dashboard"))
+	except Exception as e:
+		return jsonify({"error"}), 500
+
+@ctrl_app.route("/login", methods=["GET"])
+def login_page():
+	return render_template("login.html")
+
+@ctrl_app.route("/dashboard", methods=["GET"])
+def dashboard():
+	if "username" not in session:
+		return redirect(url_for("login_page"))
+	return render_template("dashboard.html", username=session["username"])
 
 @ctrl_app.route("/login", methods=["POST"])
 def login():
 	data = request.get_json(force=True)
 	username = data.get("username")
 	password = data.get("password")
-
+	log.info(f"{username}:{password}")
 	if not username or not password:
 		return jsonify({"error": "Missing username or password"}), 400
 
