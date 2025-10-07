@@ -18,7 +18,8 @@ logging.getLogger('flask.cli').disabled = True  # disable startup banner
 
 log = core.getLogger()
 
-# USER_IP[IP] = USER
+# USER_IP[IP] = [USER,expire]
+# Add expire field for captive portal authentication
 USER_IP = {}
 # USER_GROUP[USER] = GROUPS (list of group names)
 USER_GROUP = {}
@@ -60,7 +61,7 @@ class Policy:
 			return True
 		if not USER_IP.get(IPAddr(ip)):
 			return False
-		usr = USER_IP[IPAddr(ip)]
+		usr = USER_IP[IPAddr(ip)][0]
 		grps = USER_GROUP[usr]
 		if usr in self.src[1]:
 			return True
@@ -186,7 +187,7 @@ def update_ip():
 
 		if USER_IP.get(IPAddr(ip)) is not None:
 			# User-IP mapping unchanged
-			if USER_IP[IPAddr(ip)] == user:
+			if USER_IP[IPAddr(ip)][0] == user:
 				return jsonify({"status": "ok"}), 200
 			# Remove old flows for this IP
 			for connection in core.openflow._connections.values():
@@ -196,7 +197,7 @@ def update_ip():
 				fm.match.nw_src = IPAddr(ip)
 				connection.send(fm)
 
-		USER_IP[IPAddr(ip)] = user
+		USER_IP[IPAddr(ip)] = [user, None]
 		USER_GROUP[user] = groups
 		return jsonify({"status": "ok"}), 200
 
@@ -259,7 +260,6 @@ def login():
 	data = request.get_json(force=True)
 	username = data.get("username")
 	password = data.get("password")
-	log.info(f"{username}:{password}")
 	if not username or not password:
 		return jsonify({"error": "Missing username or password"}), 400
 

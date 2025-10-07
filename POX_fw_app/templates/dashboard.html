@@ -1,39 +1,232 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>SDN Firewall Dashboard</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Firewall Dashboard</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0e1726;
+            color: #fff;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #1e293b;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        header h1 {
+            font-size: 1.2rem;
+            margin: 0;
+        }
+        header button {
+            background: #2563eb;
+            border: none;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        header button:hover {
+            background: #1d4ed8;
+        }
+        .content {
+            padding: 2rem;
+        }
+        #message {
+            color: #f87171;
+            margin-top: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1e293b;
+            margin-top: 1rem;
+            border-radius: 5px;
+            overflow: hidden;
+            table-layout: fixed;
+        }
+        th, td {
+            border: 1px solid #334155;
+            padding: 0.6rem;
+            text-align: left;
+            vertical-align: top;
+            word-wrap: break-word;
+            font-size: 0.9rem;
+        }
+        th {
+            background: #2563eb;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background: #273449;
+        }
+        .disabled-row {
+            background: #475569 !important;
+            color: #cbd5e1;
+            font-style: italic;
+            opacity: 0.7;
+        }
+        .action-allow {
+            color: #22c55e;
+            font-weight: bold;
+        }
+        .action-deny {
+            color: #ef4444;
+            font-weight: bold;
+        }
+        .edit-btn {
+            background: #475569;
+            color: white;
+            border: none;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        .edit-btn:hover {
+            background: #64748b;
+        }
+        th.small, td.small {
+            width: 60px;
+            text-align: center;
+        }
+        th.medium, td.medium {
+            width: 100px;
+        }
+    </style>
 </head>
 <body>
-    <h2>Welcome, {{ username }}</h2>
-    <a href="/logout">Logout</a>
+    <header>
+        <h1>Firewall Dashboard</h1>
+        <button id="logoutBtn">Logout</button>
+    </header>
 
-    <h3>Policies</h3>
-    <table border="1" id="policyTable">
-        <thead>
-            <tr><th>ID</th><th>Name</th><th>Src IP</th><th>Dst IP</th><th>Action</th></tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+    <div class="content">
+        <h2>Active Firewall Policies</h2>
+        <div id="message"></div>
 
-    <script>
-        async function loadPolicies() {
-            const res = await fetch("/list_policies");
-            const data = await res.json();
-            const tbody = document.querySelector("#policyTable tbody");
-            tbody.innerHTML = "";
-            data.forEach(p => {
-                const row = `<tr>
-                    <td>${p.id}</td>
-                    <td>${p.name}</td>
-                    <td>${p.srcip}</td>
-                    <td>${p.dstip}</td>
-                    <td>${p.action ? "ALLOW" : "DENY"}</td>
-                </tr>`;
-                tbody.insertAdjacentHTML("beforeend", row);
-            });
+        <table id="policyTable">
+            <thead>
+                <tr>
+                    <th class="small">ID</th>
+                    <th>Name</th>
+                    <th>Source IP</th>
+                    <th>Source User</th>
+                    <th>Destination IP</th>
+                    <th class="medium">TCP</th>
+                    <th class="medium">UDP</th>
+                    <th class="small">ICMP</th>
+                    <th class="small">Action</th>
+                    <th>Schedule</th>
+                    <th class="medium">Edit</th>
+                </tr>
+            </thead>
+            <tbody id="policyBody">
+                <tr><td colspan="11">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script type="text/javascript">
+    document.addEventListener("DOMContentLoaded", function() {
+        var msg = document.getElementById("message");
+        var logoutBtn = document.getElementById("logoutBtn");
+        var policyBody = document.getElementById("policyBody");
+
+        function loadPolicies() {
+            var xhr = new XMLHttpRequest();
+            xhr.open("GET", "/list_policies", true);
+
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    if (xhr.status === 200) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            populateTable(data);
+                        } catch (e) {
+                            msg.textContent = "Invalid response from server.";
+                        }
+                    } else if (xhr.status === 401) {
+                        window.location.href = "/login";
+                    } else {
+                        msg.textContent = "Failed to load policies.";
+                    }
+                }
+            };
+
+            xhr.onerror = function() {
+                msg.textContent = "Network error while loading policies.";
+            };
+
+            xhr.send();
         }
+
+        function populateTable(policies) {
+            if (!policies || policies.length === 0) {
+                policyBody.innerHTML = "<tr><td colspan='11'>No policies found</td></tr>";
+                return;
+            }
+
+            var html = "";
+            for (var i = 0; i < policies.length; i++) {
+                var p = policies[i];
+                var actionClass = p.action ? "action-allow" : "action-deny";
+                var rowClass = p.disabled ? "disabled-row" : "";
+
+                function formatList(arr) {
+                    if (!arr || arr.length === 0) return "";
+                    return arr.join("<br>");
+                }
+
+                html += "<tr class='" + rowClass + "'>" +
+                    "<td class='small'>" + (p.id || "") + "</td>" +
+                    "<td>" + (p.name || "") + "</td>" +
+                    "<td>" + formatList(p.srcip) + "</td>" +
+                    "<td>" + formatList(p.srcuser) + "</td>" +
+                    "<td>" + formatList(p.dstip) + "</td>" +
+                    "<td class='medium'>" + formatList(p.tcp_ports) + "</td>" +
+                    "<td class='medium'>" + formatList(p.udp_ports) + "</td>" +
+                    "<td class='small'>" + (p.icmp ? "✓" : "") + "</td>" +
+                    "<td class='small " + actionClass + "'>" + (p.action ? "ALLOW" : "DENY") + "</td>" +
+                    "<td>" + (p.schedule || "") + "</td>" +
+                    "<td class='medium'><button class='edit-btn' data-id='" + p.id + "'>Edit</button></td>" +
+                "</tr>";
+            }
+            policyBody.innerHTML = html;
+            attachEditHandlers();
+        }
+
+        function attachEditHandlers() {
+            var buttons = document.getElementsByClassName("edit-btn");
+            for (var i = 0; i < buttons.length; i++) {
+                buttons[i].addEventListener("click", function(e) {
+                    var id = e.target.getAttribute("data-id");
+                    alert("Edit policy ID: " + id);
+                    // Replace with modal or redirect logic if needed
+                });
+            }
+        }
+
+        logoutBtn.addEventListener("click", function() {
+            var xhr = new XMLHttpRequest();
+            xhr.open("POST", "/logout", true);
+            xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState === XMLHttpRequest.DONE) {
+                    window.location.href = "/login";
+                }
+            };
+            xhr.send();
+        });
+
         loadPolicies();
+    });
     </script>
 </body>
 </html>
