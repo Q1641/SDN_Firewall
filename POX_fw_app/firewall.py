@@ -10,13 +10,27 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, s
 from psycopg2.extras import RealDictCursor
 from werkzeug.security import check_password_hash
 import os
+import re
 import logging
+import dns.resolver
 
 logging.getLogger('werkzeug').disabled = True   # disable werkzeug logs
 logging.getLogger('flask').disabled = True      # disable flask logs
 logging.getLogger('flask.cli').disabled = True  # disable startup banner
 
 log = core.getLogger()
+
+# Database connection config
+DB_CONFIG = {
+    "dbname": "SDNfw",
+    "user": "srv_acc",
+    "password": "root123",
+    "host": "10.99.0.1",
+    "port": 5432
+}
+
+def get_db_connection():
+	return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
 # USER_IP[IP] = [USER,expire]
 # Add expire field for captive portal authentication
@@ -105,6 +119,19 @@ class Policy:
 			return [False, None]
 		return [False, None]
 
+def domains_to_ips(domains, dstip):
+	resolver = dns.resolver.Resolver()
+	resolver.nameservers = ["8.8.8.8"]
+	ips = set(dstip)
+	for domain in domains:
+		try:
+			answers = resolver.resolve(domain, 'A')
+			for rdata in answers:
+				ips.add(rdata.address)
+		except Exception as e:
+			print(f"[!] Could not resolve {domain}: {e}")
+	return list(ips)
+
 def load_policies():
 	conn = psycopg2.connect(
 		dbname="SDNfw",
@@ -115,15 +142,17 @@ def load_policies():
 	)
 	cur = conn.cursor()
 	cur.execute("""
-		SELECT id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule FROM policy
+		SELECT id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule, domains FROM policy
 		WHERE disabled = FALSE AND (schedule IS NULL OR schedule >= CURRENT_DATE) ORDER BY order_index;
 	""")
 	policies = []
 	for row in cur.fetchall():
-		id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule = row
+		id, name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, schedule, domains = row
 		srcip = srcip or []
 		srcuser = srcuser or []
+		domains = domains or []
 		dstip = dstip or []
+		dstip = domains_to_ips(domains, dstip)
 		tcp_ports = tcp_ports or []
 		udp_ports = udp_ports or []
 		policy = Policy(
@@ -141,7 +170,26 @@ def load_policies():
 
 	cur.close()
 	conn.close()
+	log.info('Policies loaded')
 	return policies
+
+def log_firewall_event(srcip, srcuser, dstip, rulename, action, dpid, ruleid=None, tcpport=None, udpport=None, icmp=False):
+	query = """
+		INSERT INTO logs (srcip, srcuser, dstip, rulename, action, ruleid, dpid, tcpport, udpport, icmp)
+		VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+	"""
+
+	values = (srcip, srcuser, dstip, rulename, action, ruleid, dpid, tcpport, udpport, icmp)
+	try:
+		conn = get_db_connection()
+		with conn.cursor() as cur:
+			cur.execute(query, values)
+		conn.commit()
+	except Exception as e:
+		print(f"[!] Failed to insert log entry: {e}")
+	finally:
+		if conn:
+			conn.close()
 
 class Firewall:
 	def __init__(self):
@@ -155,15 +203,50 @@ class Firewall:
 			log.info('Incomplete Packet!')
 			return EventHalt
 		ipv4h = packet.find('ipv4')
+		tcp_pkt = packet.find('tcp')
+		udp_pkt = packet.find('udp')
+		icmp_pkt = packet.find('icmp')
 		if not ipv4h:
 			return
-		matching_rule = ""
+		matching_rule = "None"
+		matching_id = None
 		for policy in self.policies:
 			matching_rule = policy.name
 			res = policy.match(packet)
 			if res[0]:
+				matching_id = policy.id
 				allowed = res[1]
 				break
+		### Logging connection
+		src_ip = str(ipv4h.srcip)
+		dst_ip = str(ipv4h.dstip)
+		tcpport = udpport = None
+		icmp = False
+
+		if tcp_pkt:
+			tcpport = tcp_pkt.dstport
+		elif udp_pkt:
+			udpport = udp_pkt.dstport
+		elif icmp_pkt:
+			icmp = True
+
+		src_user = None
+		if IPAddr(src_ip) in USER_IP:
+			src_user = USER_IP[IPAddr(src_ip)][0]
+
+		log_firewall_event(
+			srcip=src_ip,
+			srcuser=src_user,
+			dstip=dst_ip,
+			rulename=matching_rule,
+			action=allowed,
+			ruleid=matching_id,
+			dpid=event.dpid,
+			tcpport=tcpport,
+			udpport=udpport,
+			icmp=icmp
+		)
+
 		if not allowed:
 			msg = of.ofp_flow_mod()
 			msg.match = of.ofp_match.from_packet(event.parsed)
@@ -210,19 +293,6 @@ ctrl_app = Flask(
 	static_folder=os.path.join(BASE_DIR, 'static')
 )
 ctrl_app.secret_key = os.urandom(24)
-
-# Database connection config
-DB_CONFIG = {
-    "dbname": "SDNfw",
-    "user": "srv_acc",
-    "password": "root123",
-    "host": "10.99.0.1",
-    "port": 5432
-}
-
-
-def get_db_connection():
-    return psycopg2.connect(**DB_CONFIG, cursor_factory=RealDictCursor)
 
 @ctrl_app.route("/")
 def index():
@@ -413,6 +483,38 @@ def create_policy():
 @ctrl_app.route("/edit_policy", methods=["POST"])
 def edit_policy():
 	pass
+
+@ctrl_app.route("/list_logs", methods=["GET"])
+def list_logs():
+	if "username" not in session:
+		return jsonify({"error": "Unauthorized"}), 401
+	username = session["username"]
+	try:
+		with get_db_connection() as conn:
+			with conn.cursor() as cur:
+				cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
+				row = cur.fetchone()
+				if not row or not row["policy_view"]:
+					return jsonify({"error": "Access denied"}), 403
+				if request.data:
+					query = request.data.decode("utf-8").strip()
+				else:
+					query = "SELECT * FROM logs ORDER BY timestamp DESC;"
+
+				safe_pattern = re.compile(r"^\s*select\b", re.IGNORECASE)
+				if not safe_pattern.match(query):
+					return jsonify({"error": "Only SELECT queries are allowed."}), 400
+
+				forbidden = ["update", "delete", "insert", "drop", "alter", "create", "execute", "grant"]
+				for word in forbidden:
+					if re.search(rf"\b{word}\b", query, re.IGNORECASE):
+						return jsonify({"error": f"Forbidden SQL keyword detected: {word}"}), 400
+				cur.execute(query)
+				results = cur.fetchall()
+				return jsonify(results), 200
+	except Exception as e:
+		print(f"[!] Error in /list_logs: {e}")
+		return jsonify({"error": "Internal server error"}), 500
 
 def launch():
 	core.registerNew(Firewall)
