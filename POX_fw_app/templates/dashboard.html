@@ -1,232 +1,700 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Firewall Dashboard</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background: #0e1726;
-            color: #fff;
-            margin: 0;
-            padding: 0;
-        }
-        header {
-            background: #1e293b;
-            padding: 1rem 2rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        header h1 {
-            font-size: 1.2rem;
-            margin: 0;
-        }
-        header button {
-            background: #2563eb;
-            border: none;
-            color: white;
-            padding: 0.5rem 1rem;
-            border-radius: 5px;
-            cursor: pointer;
-        }
-        header button:hover {
-            background: #1d4ed8;
-        }
-        .content {
-            padding: 2rem;
-        }
-        #message {
-            color: #f87171;
-            margin-top: 1rem;
-        }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            background: #1e293b;
-            margin-top: 1rem;
-            border-radius: 5px;
-            overflow: hidden;
-            table-layout: fixed;
-        }
-        th, td {
-            border: 1px solid #334155;
-            padding: 0.6rem;
-            text-align: left;
-            vertical-align: top;
-            word-wrap: break-word;
-            font-size: 0.9rem;
-        }
-        th {
-            background: #2563eb;
-            font-weight: bold;
-        }
-        tr:nth-child(even) {
-            background: #273449;
-        }
-        .disabled-row {
-            background: #475569 !important;
-            color: #cbd5e1;
-            font-style: italic;
-            opacity: 0.7;
-        }
-        .action-allow {
-            color: #22c55e;
-            font-weight: bold;
-        }
-        .action-deny {
-            color: #ef4444;
-            font-weight: bold;
-        }
-        .edit-btn {
-            background: #475569;
-            color: white;
-            border: none;
-            padding: 0.3rem 0.6rem;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.8rem;
-        }
-        .edit-btn:hover {
-            background: #64748b;
-        }
-        th.small, td.small {
-            width: 60px;
-            text-align: center;
-        }
-        th.medium, td.medium {
-            width: 100px;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SDN Firewall — Policy</title>
+
+  <!-- Inline styles: dark theme, responsive -->
+
+  <style>
+    :root{
+      --bg:#0e1726;
+      --panel:#1e293b;
+      --panel-2:#1e293b;
+      --muted:#94a3b8;
+      --muted-2:#94a3b8;
+      --accent:#2563eb;
+      --danger:#ef4444;
+      --radius:8px;
+      --shadow: 0 8px 24px rgba(2,6,23,0.6);
+      --glass: rgba(255,255,255,0.02);
+    }
+
+    html,body{
+      height:100%;
+      margin:0;
+      font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background:var(--bg);
+      color:var(--muted);
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+    }
+
+    /* Top Navigation */
+    .navbar{
+      position:fixed;
+      top:0;
+      left:0;
+      right:0;
+      height:64px;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding:0 18px;
+      background:var(--panel);
+      border-bottom:1px solid rgba(255,255,255,0.03);
+      z-index:1200;
+    }
+    .nav-left{
+      display:flex;
+      align-items:center;
+      gap:18px;
+    }
+    .nav-brand{
+      font-weight:600;
+      color:var(--muted);
+      font-size:16px;
+      display:inline-block;
+      padding-right:6px;
+    }
+    .nav-tabs{
+      display:flex;
+      gap:8px;
+      align-items:center;
+    }
+    .nav-tabs a{
+      color:var(--muted-2);
+      text-decoration:none;
+      padding:8px 12px;
+      border-radius:6px;
+      font-size:14px;
+      display:inline-flex;
+      align-items:center;
+    }
+    .nav-tabs a:hover{ background:var(--glass); color:var(--muted); }
+    .nav-tabs a.active{
+      color:var(--muted);
+      box-shadow: inset 0 -3px 0 var(--accent);
+      position:relative;
+      font-weight:600;
+    }
+
+    /* User menu (right) */
+    .nav-right{ display:flex; align-items:center; gap:12px; }
+    .user-btn{
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.03);
+      color:var(--muted);
+      padding:8px 10px;
+      border-radius:10px;
+      cursor:pointer;
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      font-size:13px;
+    }
+    .user-btn:focus{ outline:none; }
+    .user-dropdown{
+      position:absolute;
+      right:0px;
+      top:calc(100% + 8px);
+      background:var(--panel-2);
+      border-radius:8px;
+      box-shadow:var(--shadow);
+      min-width:180px;
+      overflow:hidden;
+      border:1px solid rgba(255,255,255,0.03);
+      display:none;
+      z-index:1300;
+    }
+    .user-dropdown.show{ display:block; }
+    .user-dropdown button{
+      width:100%;
+      background:transparent;
+      border:none;
+      text-align:left;
+      padding:10px 12px;
+      color:var(--muted);
+      cursor:pointer;
+      font-size:14px;
+    }
+    .user-dropdown button:hover{ background:rgba(255,255,255,0.02); }
+
+    /* Page content */
+    main.content{
+      max-width:1200px;
+      margin:0 auto;
+      padding:92px 18px 40px;
+      box-sizing:border-box;
+    }
+
+    .panel{
+      background:var(--panel-2);
+      border-radius:var(--radius);
+      padding:14px;
+      box-shadow:var(--shadow);
+      border:1px solid rgba(255,255,255,0.03);
+    }
+
+    /* Controls area (two rows) */
+    .controls-top{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      margin-bottom:10px;
+      flex-wrap:wrap;
+    }
+
+    /* Column selector */
+    .col-select{
+      position:relative;
+      display:inline-block;
+    }
+    .col-select button{
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.04);
+      padding:8px 10px;
+      border-radius:8px;
+      color:var(--muted);
+      cursor:pointer;
+      font-size:13px;
+    }
+    .col-dropdown{
+      position:absolute;
+      left:0;
+      top:calc(100% + 8px);
+      background:var(--panel);
+      border-radius:8px;
+      padding:10px;
+      box-shadow:var(--shadow);
+      display:none;
+      min-width:220px;
+      border:1px solid rgba(255,255,255,0.03);
+      z-index:1100;
+    }
+    .col-dropdown.show{ display:block; }
+    .col-dropdown label{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      padding:6px 4px;
+      cursor:pointer;
+      color:var(--muted);
+      font-size:13px;
+    }
+
+    /* Add button */
+    .add-btn{
+      background:var(--accent);
+      color:white;
+      border:none;
+      padding:10px 14px;
+      border-radius:10px;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow: 0 6px 18px rgba(0,123,255,0.15);
+    }
+    .add-btn:active{ transform:translateY(1px); }
+
+    /* Second row: search block */
+    .controls-search{
+      display:flex;
+      gap:12px;
+      margin-top:8px;
+      align-items:flex-start;
+      flex-wrap:wrap;
+    }
+    .search-area{
+      flex:1 1 560px;
+      display:flex;
+      min-width:220px;
+      gap:8px;
+      align-items:flex-start;
+    }
+    .search-text{
+      flex:1;
+      min-width:180px;
+      resize:vertical;
+      max-height:360px;
+      padding:10px 12px;
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.04);
+      background:transparent;
+      color:var(--muted);
+      font-size:14px;
+    }
+    .search-row-right{ display:flex; align-items:center; gap:8px; }
+
+    .search-btn{
+      background:linear-gradient(180deg, var(--accent), #0062d6);
+      color:white;
+      border:none;
+      padding:10px 14px;
+      border-radius:8px;
+      cursor:pointer;
+      font-weight:600;
+    }
+
+    /* Table container */
+    .table-wrap{
+      margin-top:12px;
+      overflow-x:auto; /* horizontal scroll only for table */
+      border-radius:8px;
+      border:1px solid rgba(255,255,255,0.03);
+    }
+
+    table.policies{
+      border-collapse:collapse;
+      width:100%;
+      min-width:1200px; /* forces horizontal scroll on small screens */
+      table-layout:auto;
+      color:var(--muted);
+      font-size:14px;
+    }
+
+    /* Header with two-line labels */
+    table.policies thead th{
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));
+      position:sticky;
+      top:0;
+      z-index:5;
+      text-align:left;
+      padding:12px 14px;
+      vertical-align:bottom;
+      font-weight:700;
+      color:var(--muted-2);
+      border-bottom:1px solid rgba(255,255,255,0.03);
+      white-space:nowrap;
+    }
+    table.policies thead th em{
+      display:block;
+      font-style:italic;
+      font-weight:400;
+      color:rgba(255,255,255,0.45);
+      font-size:12px;
+      margin-top:4px;
+    }
+
+    table.policies td{
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,0.03);
+      vertical-align:middle;
+      white-space:nowrap;
+    }
+
+    /* Column sizing helpers */
+    .small{ width:72px; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+    .medium{ width:140px; max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+    .large{ width:220px; max-width:420px; overflow:hidden; text-overflow:ellipsis; }
+
+    /* Action styles */
+    .action-allow{ color:var(--accent); font-weight:700; }
+    .action-deny{ color:var(--danger); font-weight:700; }
+
+    /* Disabled row */
+    .disabled-row{ opacity:0.55; font-style:italic; filter:grayscale(0.1); }
+
+    /* Edit button */
+    .edit-btn{
+      background:transparent;
+      border:1px solid rgba(255,255,255,0.04);
+      color:var(--muted);
+      padding:8px 10px;
+      border-radius:8px;
+      cursor:pointer;
+    }
+
+    /* Responsive: stack controls on narrow screens */
+    @media (max-width:820px){
+      .controls-top{ flex-direction:column; align-items:stretch; }
+      .controls-search{ flex-direction:column; }
+      .search-row-right{ width:100%; display:flex; justify-content:flex-end; }
+      table.policies{ font-size:13px; min-width:1000px; }
+    }
+
+    /* Small nicety: resizer handle for column drag */
+    .th-resizer{
+      position:absolute;
+      right:0;
+      top:0;
+      bottom:0;
+      width:8px;
+      cursor:col-resize;
+      z-index:6;
+    }
+    th.relative{ position:relative; }
+  </style>
+
 </head>
 <body>
-    <header>
-        <h1>Firewall Dashboard</h1>
-        <button id="logoutBtn">Logout</button>
-    </header>
-
-    <div class="content">
-        <h2>Active Firewall Policies</h2>
-        <div id="message"></div>
-
-        <table id="policyTable">
-            <thead>
-                <tr>
-                    <th class="small">ID</th>
-                    <th>Name</th>
-                    <th>Source IP</th>
-                    <th>Source User</th>
-                    <th>Destination IP</th>
-                    <th class="medium">TCP</th>
-                    <th class="medium">UDP</th>
-                    <th class="small">ICMP</th>
-                    <th class="small">Action</th>
-                    <th>Schedule</th>
-                    <th class="medium">Edit</th>
-                </tr>
-            </thead>
-            <tbody id="policyBody">
-                <tr><td colspan="11">Loading...</td></tr>
-            </tbody>
-        </table>
+  <!-- Navbar -->
+  <header class="navbar" role="banner">
+    <div class="nav-left" role="navigation" aria-label="Main navigation">
+      <div class="nav-brand">SDN Firewall</div>
+      <nav class="nav-tabs" role="tablist" aria-label="Primary">
+        <a href="/logs" class="tab">Logs</a>
+        <a href="/dashboard" class="tab active" aria-current="page">Policy</a>
+      </nav>
     </div>
 
-    <script type="text/javascript">
-    document.addEventListener("DOMContentLoaded", function() {
-        var msg = document.getElementById("message");
-        var logoutBtn = document.getElementById("logoutBtn");
-        var policyBody = document.getElementById("policyBody");
+<div class="nav-right" style="position:relative;">
+  <button class="user-btn" id="userBtn" aria-haspopup="true" aria-expanded="false" title="Account menu">
+    <!-- simple SVG user icon -->
+    <span aria-hidden="true" style="display:inline-block; width:16px; height:16px;">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 12c2.761 0 5-2.239 5-5s-2.239-5-5-5-5 2.239-5 5 2.239 5 5 5z" fill="currentColor" />
+        <path d="M4 20c0-3.314 2.686-6 6-6h4c3.314 0 6 2.686 6 6v1H4v-1z" fill="currentColor" />
+      </svg>
+    </span>
+  </button>
 
-        function loadPolicies() {
-            var xhr = new XMLHttpRequest();
-            xhr.open("GET", "/list_policies", true);
+  <div class="user-dropdown" id="userDropdown" role="menu" aria-hidden="true">
+    <button id="changePasswordBtn" type="button" role="menuitem">Change Password</button>
+    <button id="logoutBtn" type="button" role="menuitem">Logout</button>
+  </div>
+</div>
 
-            xhr.onreadystatechange = function() {
-                if (xhr.readyState === XMLHttpRequest.DONE) {
-                    if (xhr.status === 200) {
-                        try {
-                            var data = JSON.parse(xhr.responseText);
-                            populateTable(data);
-                        } catch (e) {
-                            msg.textContent = "Invalid response from server.";
-                        }
-                    } else if (xhr.status === 401) {
-                        window.location.href = "/login";
-                    } else {
-                        msg.textContent = "Failed to load policies.";
-                    }
-                }
-            };
+  </header>
 
-            xhr.onerror = function() {
-                msg.textContent = "Network error while loading policies.";
-            };
+  <!-- Main content -->
 
-            xhr.send();
-        }
+  <main class="content" role="main">
+    <div class="panel" role="region" aria-labelledby="policyHeading">
+      <h2 id="policyHeading" style="margin:0 0 8px 0; color:var(--muted); font-size:16px;">Policy Management</h2>
 
-        function populateTable(policies) {
-            if (!policies || policies.length === 0) {
-                policyBody.innerHTML = "<tr><td colspan='11'>No policies found</td></tr>";
-                return;
-            }
+  <!-- Controls Top Row -->
+  <div class="controls-top">
+    <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+      <!-- Column selector -->
+      <div class="col-select" id="colSelect">
+        <button id="colSelectBtn" aria-haspopup="true" aria-expanded="false">Select Columns ▾</button>
+        <div class="col-dropdown" id="colDropdown" aria-hidden="true">
+          <!-- Checkboxes with data-col matching column classes -->
+          <label><input type="checkbox" data-col="id" checked /> ID</label>
+          <label><input type="checkbox" data-col="name" checked /> Name</label>
+          <label><input type="checkbox" data-col="srcip" checked /> Source IP</label>
+          <label><input type="checkbox" data-col="srcuser" checked /> Source User</label>
+          <label><input type="checkbox" data-col="dstip" checked /> Destination IP</label>
+          <label><input type="checkbox" data-col="domains" checked /> Domains</label>
+          <label><input type="checkbox" data-col="tcp_ports" checked /> TCP</label>
+          <label><input type="checkbox" data-col="udp_ports" checked /> UDP</label>
+          <label><input type="checkbox" data-col="icmp" checked /> ICMP</label>
+          <label><input type="checkbox" data-col="action" checked /> Action</label>
+          <label><input type="checkbox" data-col="schedule" checked /> Schedule</label>
+          <label><input type="checkbox" data-col="edit" checked /> Edit</label>
+        </div>
+      </div>
+    </div>
 
-            var html = "";
-            for (var i = 0; i < policies.length; i++) {
-                var p = policies[i];
-                var actionClass = p.action ? "action-allow" : "action-deny";
-                var rowClass = p.disabled ? "disabled-row" : "";
+    <div style="display:flex; gap:12px; align-items:center;">
+      <button class="add-btn" id="addPolicyBtn" title="Add Policy">Add Policy</button>
+    </div>
+  </div>
 
-                function formatList(arr) {
-                    if (!arr || arr.length === 0) return "";
-                    return arr.join("<br>");
-                }
+  <!-- Controls Second Row (search) -->
+  <div class="controls-search">
+    <div class="search-area">
+      <textarea id="searchText" class="search-text"></textarea>
+      <div class="search-row-right">
+        <button id="searchBtn" class="search-btn">Search</button>
+      </div>
+    </div>
+  </div>
 
-                html += "<tr class='" + rowClass + "'>" +
-                    "<td class='small'>" + (p.id || "") + "</td>" +
-                    "<td>" + (p.name || "") + "</td>" +
-                    "<td>" + formatList(p.srcip) + "</td>" +
-                    "<td>" + formatList(p.srcuser) + "</td>" +
-                    "<td>" + formatList(p.dstip) + "</td>" +
-                    "<td class='medium'>" + formatList(p.tcp_ports) + "</td>" +
-                    "<td class='medium'>" + formatList(p.udp_ports) + "</td>" +
-                    "<td class='small'>" + (p.icmp ? "✓" : "") + "</td>" +
-                    "<td class='small " + actionClass + "'>" + (p.action ? "ALLOW" : "DENY") + "</td>" +
-                    "<td>" + (p.schedule || "") + "</td>" +
-                    "<td class='medium'><button class='edit-btn' data-id='" + p.id + "'>Edit</button></td>" +
-                "</tr>";
-            }
-            policyBody.innerHTML = html;
-            attachEditHandlers();
-        }
+  <!-- Table area -->
+  <div class="table-wrap" id="tableWrap" aria-live="polite" style="margin-top:12px;">
+    <table class="policies" id="policiesTable" role="table" aria-label="Policies">
+      <thead>
+        <tr>
+          <th class="relative small col-id">ID<em>id</em><span class="th-resizer" data-col="0"></span></th>
+          <th class="relative col-name">Name<em>name</em><span class="th-resizer" data-col="1"></span></th>
+          <th class="relative col-srcip">Source IP<em>srcip</em><span class="th-resizer" data-col="2"></span></th>
+          <th class="relative col-srcuser">Source User<em>srcuser</em><span class="th-resizer" data-col="3"></span></th>
+          <th class="relative col-dstip">Destination IP<em>dstip</em><span class="th-resizer" data-col="4"></span></th>
+          <th class="relative col-domains">Domains<em>domains</em><span class="th-resizer" data-col="5"></span></th>
+          <th class="relative medium col-tcp_ports">TCP<em>tcp_ports</em><span class="th-resizer" data-col="6"></span></th>
+          <th class="relative medium col-udp_ports">UDP<em>udp_ports</em><span class="th-resizer" data-col="7"></span></th>
+          <th class="relative small col-icmp">ICMP<em>icmp</em><span class="th-resizer" data-col="8"></span></th>
+          <th class="relative small col-action">Action<em>action</em><span class="th-resizer" data-col="9"></span></th>
+          <th class="relative col-schedule">Schedule<em>schedule</em><span class="th-resizer" data-col="10"></span></th>
+          <th class="relative medium col-edit">Edit<em>—</em><span class="th-resizer" data-col="11"></span></th>
+        </tr>
+      </thead>
+      <tbody id="policiesTbody">
+      </tbody>
+    </table>
+  </div>
+</div>
 
-        function attachEditHandlers() {
-            var buttons = document.getElementsByClassName("edit-btn");
-            for (var i = 0; i < buttons.length; i++) {
-                buttons[i].addEventListener("click", function(e) {
-                    var id = e.target.getAttribute("data-id");
-                    alert("Edit policy ID: " + id);
-                    // Replace with modal or redirect logic if needed
-                });
-            }
-        }
+  </main>
+  <script>
+    /* Utility: escape text for insertion */
+    function escapeHtml(s) {
+      if (s === null || s === undefined) { return ""; }
+      return String(s).replace(/[&<>"'`=\/]/g, function (c) {
+        return {
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','=':'&#x3D;','`':'&#x60;'
+        }[c];
+      });
+    }
 
-        logoutBtn.addEventListener("click", function() {
-            var xhr = new XMLHttpRequest();
-            xhr.open("POST", "/logout", true);
-            xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
-            xhr.onreadystatechange = function() {
-                if (xhr.readyState === XMLHttpRequest.DONE) {
-                    window.location.href = "/login";
-                }
-            };
-            xhr.send();
+    /* Format lists or arrays to readable string */
+    function formatList(v) {
+      if (v === null || v === undefined) { return ""; }
+      if (Array.isArray(v)) { return escapeHtml(v.join(", ")); }
+      return escapeHtml(String(v));
+    }
+
+    /* Build row HTML using the provided template structure */
+    function buildRowHtml(p) {
+      var rowClass = (p.disabled ? "disabled-row" : "");
+      var actionClass = (p.action ? "action-allow" : "action-deny");
+      var html = "<tr class='" + rowClass + "' data-id='" + escapeHtml(p.id) + "'>";
+      html += "<td class='small col-id'>" + escapeHtml(p.id || "") + "</td>";
+      html += "<td class='col-name'>" + escapeHtml(p.name || "") + "</td>";
+      html += "<td class='col-srcip'>" + formatList(p.srcip) + "</td>";
+      html += "<td class='col-srcuser'>" + formatList(p.srcuser) + "</td>";
+      html += "<td class='col-dstip'>" + formatList(p.dstip) + "</td>";
+      html += "<td class='col-domains'>" + formatList(p.domains) + "</td>";
+      html += "<td class='medium col-tcp_ports'>" + formatList(p.tcp_ports) + "</td>";
+      html += "<td class='medium col-udp_ports'>" + formatList(p.udp_ports) + "</td>";
+      html += "<td class='small col-icmp'>" + (p.icmp ? "✓" : "") + "</td>";
+      html += "<td class='small col-action " + actionClass + "'>" + (p.action ? "ALLOW" : "DENY") + "</td>";
+      html += "<td class='col-schedule'>" + escapeHtml(p.schedule || "") + "</td>";
+      html += "<td class='medium col-edit'><button class='edit-btn' data-id='" + escapeHtml(p.id) + "'>Edit</button></td>";
+      html += "</tr>";
+      return html;
+    }
+
+    /* Render policies array into table body */
+    function renderPolicies(policies) {
+      var tbody = document.getElementById("policiesTbody");
+      if (!policies || policies.length === 0) {
+        tbody.innerHTML = "<tr><td colspan='12' style='padding:18px; color:var(--muted-2);'>No policies found.</td></tr>";
+        return;
+      }
+      var html = "";
+      for (var i = 0; i < policies.length; i++) {
+        html += buildRowHtml(policies[i]);
+      }
+      tbody.innerHTML = html;
+
+      // attach edit button handlers
+      var editBtns = tbody.querySelectorAll(".edit-btn");
+      for (var i = 0; i < editBtns.length; i++) {
+        editBtns[i].addEventListener("click", function (evt) {
+          var id = this.getAttribute("data-id");
+          if (id) {
+            window.location.href = "/edit?id=" + encodeURIComponent(id);
+          }
         });
+      }
+    }
 
-        loadPolicies();
+    function fetchPolicies(queryText, callback) {
+      var url = "/list_policies";
+      if (queryText && queryText.length > 0) {
+        // encode as query param
+        url += "?q=" + encodeURIComponent(queryText);
+      }
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", url, true);
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) { return; }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            var data = JSON.parse(xhr.responseText);
+            callback(null, data);
+          } catch (e) {
+            callback(new Error("Failed to parse response"));
+          }
+        } else {
+          callback(new Error("HTTP status " + xhr.status));
+        }
+      };
+      xhr.send(null);
+    }
+
+    /* Column selector logic */
+    (function setupColumnSelector(){
+      var btn = document.getElementById("colSelectBtn");
+      var dropdown = document.getElementById("colDropdown");
+      btn.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+        if (dropdown.classList.contains("show")) {
+          dropdown.classList.remove("show");
+          btn.setAttribute("aria-expanded","false");
+          dropdown.setAttribute("aria-hidden","true");
+        } else {
+          dropdown.classList.add("show");
+          btn.setAttribute("aria-expanded","true");
+          dropdown.setAttribute("aria-hidden","false");
+        }
+      });
+
+      // toggle columns
+      var checks = dropdown.querySelectorAll('input[type="checkbox"][data-col]');
+      for (var i = 0; i < checks.length; i++) {
+        (function(cb){
+          cb.addEventListener("change", function () {
+            var col = cb.getAttribute("data-col");
+            toggleColVisibility(col, cb.checked);
+          });
+        })(checks[i]);
+      }
+
+      function toggleColVisibility(colKey, visible) {
+        var selector = ".col-" + colKey;
+        var elems = document.querySelectorAll(selector);
+        for (var i = 0; i < elems.length; i++) {
+          elems[i].style.display = visible ? "" : "none";
+        }
+      }
+
+      // initialize defaults from checkboxes
+      for (var i = 0; i < checks.length; i++) {
+        var col = checks[i].getAttribute("data-col");
+        toggleColVisibility(col, checks[i].checked);
+      }
+
+      // close on outside click
+      document.addEventListener("click", function (evt) {
+        if (!document.getElementById("colSelect").contains(evt.target)) {
+          dropdown.classList.remove("show");
+          btn.setAttribute("aria-expanded","false");
+          dropdown.setAttribute("aria-hidden","true");
+        }
+      });
+    })();
+
+    /* Navbar user menu logic */
+    (function setupUserMenu(){
+      var userBtn = document.getElementById("userBtn");
+      var userDropdown = document.getElementById("userDropdown");
+      userBtn.addEventListener("click", function (evt) {
+        evt.stopPropagation();
+        if (userDropdown.classList.contains("show")) {
+          userDropdown.classList.remove("show");
+          userBtn.setAttribute("aria-expanded","false");
+          userDropdown.setAttribute("aria-hidden","true");
+        } else {
+          userDropdown.classList.add("show");
+          userBtn.setAttribute("aria-expanded","true");
+          userDropdown.setAttribute("aria-hidden","false");
+        }
+      });
+
+      document.addEventListener("click", function (evt) {
+        if (!userBtn.contains(evt.target) && !userDropdown.contains(evt.target)) {
+          userDropdown.classList.remove("show");
+          userBtn.setAttribute("aria-expanded","false");
+          userDropdown.setAttribute("aria-hidden","true");
+        }
+      });
+
+      document.getElementById("changePasswordBtn").addEventListener("click", function () {
+        window.location.href = "/change_password";
+      });
+      document.getElementById("logoutBtn").addEventListener("click", function () {
+        // POST logout then redirect (simple implementation)
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", "/logout", true);
+        xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) { return; }
+          if (xhr.status >= 200 && xhr.status < 300) {
+            window.location.href = "/login";
+          } else {
+            alert("Logout failed (status " + xhr.status + ")");
+          }
+        };
+        xhr.send(JSON.stringify({}));
+      });
+    })();
+
+    /* Add policy button */
+    document.getElementById("addPolicyBtn").addEventListener("click", function () {
+      window.location.href = "/add_policy";
     });
-    </script>
+
+    /* Search button behavior: send GET /list_policies?q=<textarea content> and render results */
+    document.getElementById("searchBtn").addEventListener("click", function () {
+      var text = document.getElementById("searchText").value || "";
+      // show loading
+      var tbody = document.getElementById("policiesTbody");
+      tbody.innerHTML = "<tr><td colspan='12' style='padding:18px; color:var(--muted-2);'>Searching...</td></tr>";
+      fetchPolicies(text, function (err, data) {
+        if (err) {
+          tbody.innerHTML = "<tr><td colspan='12' style='padding:18px; color:var(--muted-2);'>Search failed: " + escapeHtml(err.message) + "</td></tr>";
+        } else {
+          // expect data to be an array of policy objects
+          renderPolicies(data);
+        }
+      });
+    });
+
+    /* Column resize: allow dragging th.resizer to change column width
+       Implementation: on mousedown record startX and th element, on mousemove adjust the width (style.width).
+    */
+    (function setupColumnResizing(){
+      var table = document.getElementById("policiesTable");
+      var ths = table.querySelectorAll("thead th");
+      var startX, startWidth, currentTh, nextTh;
+      function onMouseDown(e) {
+        if (!e.target.classList.contains("th-resizer")) { return; }
+        e.preventDefault();
+        currentTh = e.target.parentNode;
+        startX = e.clientX;
+        startWidth = currentTh.offsetWidth;
+        document.addEventListener("mousemove", onMouseMove);
+        document.addEventListener("mouseup", onMouseUp);
+      }
+      function onMouseMove(e) {
+        if (!currentTh) { return; }
+        var dx = e.clientX - startX;
+        var newWidth = startWidth + dx;
+        if (newWidth < 40) { newWidth = 40; }
+        currentTh.style.width = newWidth + "px";
+      }
+      function onMouseUp() {
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        currentTh = null;
+      }
+      table.addEventListener("mousedown", onMouseDown);
+    })();
+
+    /* Initialize: attach handlers for example Edit buttons in placeholder rows */
+    (function initEditButtons() {
+      var editBtns = document.querySelectorAll(".edit-btn");
+      for (var i = 0; i < editBtns.length; i++) {
+        editBtns[i].addEventListener("click", function (evt) {
+          var id = this.getAttribute("data-id");
+          alert("Edit policy: " + id);
+        });
+      }
+    })();
+
+    /* Optional: expose reload function */
+    window.reloadPolicies = function () {
+      var text = document.getElementById("searchText").value || "";
+      document.getElementById("searchBtn").click();
+    };
+
+    /* Prevent accidental form submissions / enter key issues in textarea */
+    document.getElementById("searchText").addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // Ctrl+Enter triggers search
+        e.preventDefault();
+        document.getElementById("searchBtn").click();
+      }
+    });
+
+    window.onload = function() {document.getElementById("searchBtn").click();};
+  </script>
+
 </body>
 </html>

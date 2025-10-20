@@ -211,9 +211,9 @@ class Firewall:
 		matching_rule = "None"
 		matching_id = None
 		for policy in self.policies:
-			matching_rule = policy.name
 			res = policy.match(packet)
 			if res[0]:
+				matching_rule = policy.name
 				matching_id = policy.id
 				allowed = res[1]
 				break
@@ -325,6 +325,35 @@ def dashboard():
 		return redirect(url_for("login_page"))
 	return render_template("dashboard.html", username=session["username"])
 
+@ctrl_app.route("/logs", methods=["GET"])
+def serve_log_html():
+	return render_template("logs.html")
+
+@ctrl_app.route("/edit", methods=["GET"])
+def serve_edit_html():
+	username = session.get("username")
+	if not username:
+		return redirect("/login")
+
+	policy_id = request.args.get("id")
+	if not policy_id:
+		return jsonify({"error": "Missing 'id' query parameter"}), 400
+
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+		cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_view"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Forbidden"}), 403
+
+		return render_template("edit.html")
+	except Exception as e:
+		print(f"[!] Error serving /edit: {e}")
+		return jsonify({"error": "Internal server error"}), 500
+
 @ctrl_app.route("/login", methods=["POST"])
 def login():
 	data = request.get_json(force=True)
@@ -362,30 +391,42 @@ def getID():
 	else:
 		return jsonify({"error": "Not logged in"}), 401
 
-@ctrl_app.route("/list_policies", methods=["GET"])
+@ctrl_app.route("/list_policies", methods=["POST"])
 def list_policy():
-	"""
-	Return all firewall policies as JSON list.
-	"""
 	username = session.get("username")
 	if not username:
 		return jsonify({"error": "Not logged in"}), 401
 	try:
 		conn = get_db_connection()
-		cur = conn.cursor()
+		cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 		cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
 		user = cur.fetchone()
 		if not user or not user["policy_view"]:
 			cur.close()
 			conn.close()
 			return jsonify({"error": "Forbidden"}), 403
-		cur.execute("SELECT * FROM policy ORDER BY order_index ASC;")
+		body = request.args.get("q")
+		if body:
+			blacklist = [
+				"drop", "delete", "update", "insert", "alter",
+				";", "--", "/*", "*/", "xp_", "exec", "truncate"
+			]
+			lower_body = body.lower()
+			if any(keyword in lower_body for keyword in blacklist):
+				cur.close()
+				conn.close()
+				return jsonify({"error": "Unsafe query detected"}), 400
+			query = f"SELECT * FROM policy WHERE {body} ORDER BY order_index ASC;"
+		else:
+			query = "SELECT * FROM policy ORDER BY order_index ASC;"
+		cur.execute(query)
 		policies = cur.fetchall()
 		cur.close()
 		conn.close()
 		return jsonify(policies), 200
 	except Exception as e:
 		return jsonify({"error": str(e)}), 500
+
 
 @ctrl_app.route("/delete_policy", methods=["DELETE"])
 def del_policy():
@@ -482,39 +523,116 @@ def create_policy():
 
 @ctrl_app.route("/edit_policy", methods=["POST"])
 def edit_policy():
-	pass
-
-@ctrl_app.route("/list_logs", methods=["GET"])
-def list_logs():
-	if "username" not in session:
+	username = session.get("username")
+	if not username:
 		return jsonify({"error": "Unauthorized"}), 401
-	username = session["username"]
+
+	if not request.is_json:
+		return jsonify({"error": "Expected JSON body"}), 400
+
+	data = request.get_json()
+	required_fields = [
+		"id", "name", "srcip", "srcuser", "dstip", "tcp_ports",
+		"udp_ports", "icmp", "action", "schedule", "domains", "disabled"
+	]
+	log.info(f'{data}')
+	missing = [f for f in required_fields if f not in data]
+	if missing:
+		return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
+
+	schedule_value = data["schedule"]
+	if not schedule_value or str(schedule_value).strip().lower() in ["null", "none", ""]:
+		schedule_value = None
 	try:
-		with get_db_connection() as conn:
-			with conn.cursor() as cur:
-				cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
-				row = cur.fetchone()
-				if not row or not row["policy_view"]:
-					return jsonify({"error": "Access denied"}), 403
-				if request.data:
-					query = request.data.decode("utf-8").strip()
-				else:
-					query = "SELECT * FROM logs ORDER BY timestamp DESC;"
+		conn = get_db_connection()
+		cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+		cur.execute("SELECT policy_mgmt FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_mgmt"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Forbidden"}), 403
+		cur.execute("SELECT id FROM policy WHERE id = %s;", (data["id"],))
+		if not cur.fetchone():
+			cur.close()
+			conn.close()
+			return jsonify({"error": f"Policy ID {data['id']} not found"}), 404
+		cur.execute("""
+			UPDATE policy
+			SET
+			name = %s,
+			srcip = %s::inet[],
+			srcuser = %s::text[],
+			dstip = %s::inet[],
+			tcp_ports = %s::integer[],
+			udp_ports = %s::integer[],
+			icmp = %s::boolean,
+			action = %s::boolean,
+			schedule = %s::date,
+			domains = %s::text[],
+			disabled = %s::boolean
+			WHERE id = %s;
+		""", (
+		data["name"],
+		data["srcip"],
+		data["srcuser"],
+		data["dstip"],
+		data["tcp_ports"],
+		data["udp_ports"],
+		data["icmp"],
+		data["action"],
+		schedule_value,
+		data["domains"],
+		data["disabled"],
+		data["id"],
+		))
 
-				safe_pattern = re.compile(r"^\s*select\b", re.IGNORECASE)
-				if not safe_pattern.match(query):
-					return jsonify({"error": "Only SELECT queries are allowed."}), 400
+		conn.commit()
+		cur.close()
+		conn.close()
+		Firewall.policies = load_policies()
+		return jsonify({"success": True, "message": "Policy updated successfully"}), 200
 
-				forbidden = ["update", "delete", "insert", "drop", "alter", "create", "execute", "grant"]
-				for word in forbidden:
-					if re.search(rf"\b{word}\b", query, re.IGNORECASE):
-						return jsonify({"error": f"Forbidden SQL keyword detected: {word}"}), 400
-				cur.execute(query)
-				results = cur.fetchall()
-				return jsonify(results), 200
+	except Exception as e:
+		print(f"[!] Error in /edit_policy: {e}")
+		return jsonify({"error": "Internal server error"}), 500
+
+@ctrl_app.route("/list_logs", methods=["POST"])
+def list_logs():
+	username = session.get("username")
+	if not username:
+		return jsonify({"error": "Unauthorized"}), 401
+	try:
+		conn = get_db_connection()
+		cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+		cur.execute("SELECT policy_view FROM users WHERE username = %s", (username,))
+		user = cur.fetchone()
+		if not user or not user["policy_view"]:
+			cur.close()
+			conn.close()
+			return jsonify({"error": "Access denied"}), 403
+		body = request.args.get("q")
+		if body:
+			blacklist = [
+				"drop", "delete", "update", "insert", "alter",
+				";", "--", "/*", "*/", "xp_", "exec", "truncate", "create", "grant"
+			]
+			lower_body = body.lower()
+			if any(keyword in lower_body for keyword in blacklist):
+				cur.close()
+				conn.close()
+				return jsonify({"error": "Unsafe or forbidden SQL content detected."}), 400
+			query = f"SELECT * FROM logs WHERE {body} ORDER BY timestamp DESC;"
+		else:
+			query = "SELECT * FROM logs ORDER BY timestamp DESC;"
+		cur.execute(query)
+		results = cur.fetchall()
+		cur.close()
+		conn.close()
+		return jsonify(results), 200
 	except Exception as e:
 		print(f"[!] Error in /list_logs: {e}")
-		return jsonify({"error": "Internal server error"}), 500
+		return jsonify({"error": str(e)}), 500
 
 def launch():
 	core.registerNew(Firewall)

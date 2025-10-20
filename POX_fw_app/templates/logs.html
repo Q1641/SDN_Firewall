@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SDN Firewall — Logs</title>
+  <style>
+:root{
+  --bg:#0e1726;
+  --panel:#1e293b;
+  --panel-2:#1e293b;
+  --muted:#94a3b8;
+  --muted-2:#94a3b8;
+  --accent:#2563eb;
+  --danger:#ef4444;
+  --radius:8px;
+  --shadow: 0 8px 24px rgba(2,6,23,0.6);
+  --glass: rgba(255,255,255,0.02);
+}
+
+html,body{
+  height:100%;
+  margin:0;
+  font-family: Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background:var(--bg);
+  color:var(--muted);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+}
+  </style>
+
+  <!-- Navigation, search, table and component CSS (as specified) -->
+  <style>
+/* Nav bar styles */
+.navbar{
+  position:fixed;
+  top:0;
+  left:0;
+  right:0;
+  height:64px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:0 18px;
+  background:var(--panel);
+  border-bottom:1px solid rgba(255,255,255,0.03);
+  z-index:1200;
+}
+.nav-left{ display:flex; align-items:center; gap:18px; }
+.nav-brand{ font-weight:600; color:var(--muted); font-size:16px; padding-right:6px; }
+.nav-tabs{ display:flex; gap:8px; align-items:center; }
+.nav-tabs a{
+  color:var(--muted-2);
+  text-decoration:none;
+  padding:8px 12px;
+  border-radius:6px;
+  font-size:14px;
+}
+.nav-tabs a:hover{ background:var(--glass); color:var(--muted); }
+.nav-tabs a.active{
+  color:var(--muted);
+  box-shadow: inset 0 -3px 0 var(--accent);
+  font-weight:600;
+}
+.nav-right{ display:flex; align-items:center; gap:12px; }
+.user-btn{
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.03);
+  color:var(--muted);
+  padding:8px 10px;
+  border-radius:10px;
+  cursor:pointer;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-size:13px;
+}
+.user-dropdown{
+  position:absolute;
+  right:0;
+  top:calc(100% + 8px);
+  background:var(--panel-2);
+  border-radius:8px;
+  box-shadow:var(--shadow);
+  min-width:180px;
+  display:none;
+  border:1px solid rgba(255,255,255,0.03);
+  z-index:1300;
+}
+.user-dropdown.show{ display:block; }
+.user-dropdown button{
+  width:100%;
+  background:transparent;
+  border:none;
+  text-align:left;
+  padding:10px 12px;
+  color:var(--muted);
+  cursor:pointer;
+  font-size:14px;
+}
+.user-dropdown button:hover{ background:rgba(255,255,255,0.02); }
+
+/* Page container */
+main.container{
+  padding:88px 20px 40px;
+  max-width:1200px;
+  margin:0 auto;
+  box-sizing:border-box;
+}
+
+/* Panel */
+.panel{
+  background:var(--panel);
+  border-radius:12px;
+  padding:16px;
+  box-shadow: 0 6px 20px rgba(2,6,23,0.6);
+  border:1px solid rgba(255,255,255,0.03);
+}
+
+/* Controls - column selector + add/search */
+.panel-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:12px;
+  margin-bottom:12px;
+}
+.col-selector{
+  position:relative;
+}
+.col-selector .col-btn{
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.04);
+  padding:8px 10px;
+  border-radius:10px;
+  cursor:pointer;
+  font-size:13px;
+  color:var(--muted);
+}
+.col-dropdown{
+  position:absolute;
+  left:0;
+  top:calc(100% + 8px);
+  min-width:220px;
+  background:var(--panel);
+  border-radius:10px;
+  border:1px solid rgba(255,255,255,0.03);
+  box-shadow: 0 8px 20px rgba(2,6,23,0.6);
+  padding:10px;
+  display:none;
+  z-index:1100;
+}
+.col-dropdown.show{ display:block; }
+.col-dropdown label{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 4px;
+  cursor:pointer;
+  font-size:13px;
+  color:var(--muted);
+}
+
+/* Search block */
+.controls-search{
+  display:flex;
+  gap:12px;
+  margin-top:8px;
+  align-items:flex-start;
+  flex-wrap:wrap;
+}
+.search-area{
+  flex:1 1 560px;
+  display:flex;
+  min-width:220px;
+  gap:8px;
+  align-items:flex-start;
+}
+.search-text{
+  flex:1;
+  min-width:180px;
+  resize:vertical;
+  max-height:360px;
+  padding:10px 12px;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.04);
+  background:transparent;
+  color:var(--muted);
+  font-size:14px;
+}
+.search-row-right{ display:flex; align-items:center; gap:8px; }
+.search-btn{
+  background:linear-gradient(180deg, var(--accent), #0062d6);
+  color:white;
+  border:none;
+  padding:10px 14px;
+  border-radius:8px;
+  cursor:pointer;
+  font-weight:600;
+}
+
+/* Table wrap and table (logs) */
+.table-wrap{
+  margin-top:12px;
+  overflow-x:auto;
+  border-radius:8px;
+  border:1px solid rgba(255,255,255,0.03);
+}
+
+table.policies{
+  border-collapse:collapse;
+  width:100%;
+  min-width:1200px;
+  table-layout:auto;
+  color:var(--muted);
+  font-size:14px;
+}
+
+table.policies thead th{
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(0,0,0,0.02));
+  position:sticky;
+  top:0;
+  z-index:5;
+  text-align:left;
+  padding:12px 14px;
+  vertical-align:bottom;
+  font-weight:700;
+  color:var(--muted-2);
+  border-bottom:1px solid rgba(255,255,255,0.03);
+  white-space:nowrap;
+}
+table.policies thead th em{
+  display:block;
+  font-style:italic;
+  font-weight:400;
+  color:rgba(255,255,255,0.45);
+  font-size:12px;
+  margin-top:4px;
+}
+table.policies td{
+  padding:12px 14px;
+  border-bottom:1px solid rgba(255,255,255,0.03);
+  vertical-align:middle;
+  white-space:nowrap;
+}
+.small{ width:72px; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+.medium{ width:140px; max-width:320px; overflow:hidden; text-overflow:ellipsis; }
+.large{ width:220px; max-width:420px; overflow:hidden; text-overflow:ellipsis; }
+
+.action-allow{ color:var(--accent); font-weight:700; }
+.action-deny{ color:var(--danger); font-weight:700; }
+
+.disabled-row{ opacity:0.55; font-style:italic; filter:grayscale(0.1); }
+.edit-btn{
+  background:transparent;
+  border:1px solid rgba(255,255,255,0.04);
+  color:var(--muted);
+  padding:8px 10px;
+  border-radius:8px;
+  cursor:pointer;
+}
+@media (max-width:820px){
+  .controls-top{ flex-direction:column; align-items:stretch; }
+  .controls-search{ flex-direction:column; }
+  .search-row-right{ width:100%; display:flex; justify-content:flex-end; }
+  table.policies{ font-size:13px; min-width:1000px; }
+}
+.th-resizer{
+  position:absolute;
+  right:0;
+  top:0;
+  bottom:0;
+  width:8px;
+  cursor:col-resize;
+  z-index:6;
+}
+th.relative{ position:relative; }
+
+/* small helper hover on rows */
+table.policies tbody tr:hover { background: rgba(255,255,255,0.01); }
+  </style>
+
+</head>
+<body>
+  <!-- Top Navigation Bar -->
+  <header class="navbar" role="banner" aria-label="Top navigation">
+    <div class="nav-left">
+      <div class="nav-brand">SDN Firewall</div>
+      <nav class="nav-tabs" role="navigation" aria-label="Primary tabs">
+        <a href="/logs" class="active">Log</a>
+        <a href="/dashboard">Policy</a>
+      </nav>
+    </div>
+
+    <div class="nav-right" style="position:relative;">
+      <button class="user-btn" id="userBtn" aria-haspopup="true" aria-expanded="false" title="Account menu">
+        <!-- simple user glyph -->
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true" style="color:var(--muted);">
+          <path d="M12 12c2.761 0 5-2.239 5-5s-2.239-5-5-5-5 2.239-5 5 2.239 5 5 5z" fill="currentColor"></path>
+          <path d="M4 20c0-3.314 2.686-6 6-6h4c3.314 0 6 2.686 6 6v1H4v-1z" fill="currentColor"></path>
+        </svg>
+      </button>
+      <div class="user-dropdown" id="userDropdown" role="menu" aria-hidden="true">
+        <button id="logoutBtn">Logout</button>
+        <button id="changePwdBtn">Change Password</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" role="main">
+    <section class="panel" aria-labelledby="logHeading">
+      <h2 id="logHeading" style="margin:0 0 8px 0; color:var(--muted); font-size:16px;">Logs</h2>
+
+      <!-- Panel Header: Column selector + (optional) actions -->
+      <div class="panel-header controls-top">
+        <div style="display:flex; align-items:center; gap:12px;">
+          <div class="col-selector" id="colSelector">
+            <button class="col-btn" id="colBtn" aria-haspopup="true" aria-expanded="false">Select Columns ▾</button>
+            <div class="col-dropdown" id="colDropdown" aria-hidden="true">
+              <!-- each checkbox maps to the column order used below -->
+              <label><input type="checkbox" data-col="1" checked /> Source IP</label>
+              <label><input type="checkbox" data-col="2" checked /> Source User</label>
+              <label><input type="checkbox" data-col="3" checked /> Destination IP</label>
+              <label><input type="checkbox" data-col="4" checked /> Rule</label>
+              <label><input type="checkbox" data-col="5" checked /> Rule ID</label>
+              <label><input type="checkbox" data-col="6" checked /> Action</label>
+              <label><input type="checkbox" data-col="7" checked /> Device ID</label>
+              <label><input type="checkbox" data-col="8" checked /> Timestamp</label>
+              <label><input type="checkbox" data-col="9" checked /> TCP</label>
+              <label><input type="checkbox" data-col="10" checked /> UDP</label>
+              <label><input type="checkbox" data-col="11" checked /> ICMP</label>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <!-- Add a right-side placeholder if needed; keep UI consistent -->
+        </div>
+      </div>
+
+      <!-- Search area -->
+      <div class="controls-search">
+        <div class="search-area" style="width:100%;">
+          <textarea id="searchText" class="search-text"></textarea>
+          <div class="search-row-right">
+            <button id="searchBtn" class="search-btn" title="Search logs">Search</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Table -->
+      <div class="table-wrap" role="region" aria-label="Logs table">
+        <table class="policies" id="logsTable" aria-describedby="logHeading">
+          <thead>
+            <tr>
+              <th><span>Source IP</span><em>srcip</em></th>
+              <th><span>Source User</span><em>srcuser</em></th>
+              <th><span>Destination IP</span><em>dstip</em></th>
+              <th><span>Rule</span><em>rulename</em></th>
+              <th><span>Rule ID</span><em>ruleid</em></th>
+              <th><span>Action</span><em>action</em></th>
+              <th><span>Device ID</span><em>dpid</em></th>
+              <th><span>Timestamp</span><em>timestamp</em></th>
+              <th><span>TCP</span><em>tcpport</em></th>
+              <th><span>UDP</span><em>udpport</em></th>
+              <th><span>ICMP</span><em>icmp</em></th>
+            </tr>
+          </thead>
+          <tbody id="logTableBody">
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Inline JavaScript for: user dropdown, column selector, search (GET /list_logs?q=...), column toggle via nth-child, and table rendering -->
+  <script>
+    // User dropdown toggle
+    (function(){
+      var userBtn = document.getElementById('userBtn');
+      var userDropdown = document.getElementById('userDropdown');
+
+      userBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var shown = userDropdown.classList.contains('show');
+        if (shown) {
+          userDropdown.classList.remove('show');
+          userDropdown.setAttribute('aria-hidden', 'true');
+        } else {
+          userDropdown.classList.add('show');
+          userDropdown.setAttribute('aria-hidden', 'false');
+        }
+      });
+
+      // outside click closes dropdown
+      document.addEventListener('click', function(e){
+        if (!userBtn.contains(e.target) && !userDropdown.contains(e.target)) {
+          userDropdown.classList.remove('show');
+          userDropdown.setAttribute('aria-hidden', 'true');
+        }
+      });
+
+      // wire Logout & Change Password buttons
+      document.getElementById('logoutBtn').addEventListener('click', function(){
+        // POST logout then redirect — here we just navigate to /logout (server should handle method)
+        window.location.href = '/logout';
+      });
+      document.getElementById('changePwdBtn').addEventListener('click', function(){
+        window.location.href = '/change_password';
+      });
+    })();
+
+    // Column selector logic (uses nth-child indices)
+    (function(){
+      var colBtn = document.getElementById('colBtn');
+      var colDropdown = document.getElementById('colDropdown');
+
+      colBtn.addEventListener('click', function(e){
+        e.stopPropagation();
+        var shown = colDropdown.classList.contains('show');
+        if (shown) {
+          colDropdown.classList.remove('show');
+          colDropdown.setAttribute('aria-hidden', 'true');
+        } else {
+          colDropdown.classList.add('show');
+          colDropdown.setAttribute('aria-hidden', 'false');
+        }
+      });
+
+      // close on outside click
+      document.addEventListener('click', function(e){
+        if (!document.getElementById('colSelector').contains(e.target)) {
+          colDropdown.classList.remove('show');
+          colDropdown.setAttribute('aria-hidden', 'true');
+        }
+      });
+
+      // toggling visibility by nth-child (1-based indices)
+      function setColumnVisible(colIndex, visible) {
+        var table = document.getElementById('logsTable');
+        if (!table) return;
+        var rows = table.querySelectorAll('tr');
+        for (var r = 0; r < rows.length; r++) {
+          var cell = rows[r].querySelector('th:nth-child(' + colIndex + '), td:nth-child(' + colIndex + ')');
+          if (cell) {
+            cell.style.display = visible ? '' : 'none';
+          }
+        }
+      }
+
+      // attach change handlers to checkboxes
+      var checks = colDropdown.querySelectorAll('input[type="checkbox"][data-col]');
+      for (var i = 0; i < checks.length; i++) {
+        (function(cb){
+          var idx = parseInt(cb.getAttribute('data-col'), 10);
+          cb.addEventListener('change', function(){
+            setColumnVisible(idx, cb.checked);
+          });
+          // initialize
+          setColumnVisible(idx, cb.checked);
+        })(checks[i]);
+      }
+    })();
+
+    // Helper: convert arrays or comma-separated strings to multiline HTML with <br>
+    function formatListMultiline(v) {
+      if (v === null || v === undefined) return '';
+      if (Array.isArray(v)) {
+        return v.map(escapeHtml).join('<br>');
+      }
+      if (typeof v === 'string') {
+        // split on commas and trim
+        var parts = v.split(',');
+        if (parts.length > 1) {
+          return parts.map(function(p){ return escapeHtml(p.trim()); }).join('<br>');
+        }
+        return escapeHtml(v);
+      }
+      return escapeHtml(String(v));
+    }
+
+    // escape helper
+    function escapeHtml(s) {
+      if (s === null || s === undefined) return '';
+      return String(s).replace(/[&<>"'`=\/]/g, function (c) {
+        return {
+          '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','/':'&#x2F;','=':'&#x3D;','`':'&#x60;'
+        }[c];
+      });
+    }
+
+    // Render logs into table body. Expect an array of log objects with keys:
+    // srcip, srcuser, dstip, rulename, ruleid, action, dpid, timestamp, tcpport, udpport, icmp
+    function renderLogs(logs) {
+      var tbody = document.getElementById('logTableBody');
+      if (!tbody) return;
+      if (!Array.isArray(logs) || logs.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="11" style="padding:18px;color:var(--muted)">No logs found.</td></tr>';
+        return;
+      }
+      var html = '';
+      for (var i = 0; i < logs.length; i++) {
+        var l = logs[i];
+        var localTime = new Date(l.timestamp).toLocaleString();
+        var actionClass = (l.action ? "action-allow" : "action-deny");
+        var disabledClass = l.disabled ? 'disabled-row' : '';
+        html += '<tr class="' + disabledClass + '">';
+        html += '<td>' + formatListMultiline(l.srcip) + '</td>';
+        html += '<td>' + formatListMultiline(l.srcuser) + '</td>';
+        html += '<td>' + formatListMultiline(l.dstip) + '</td>';
+        html += '<td>' + escapeHtml(l.rulename || '') + '</td>';
+        html += '<td class="small">' + escapeHtml(l.ruleid || '') + '</td>';
+        html += "<td class='small col-action " + actionClass + "'>" + (l.action ? "ALLOW" : "DENY") + "</td>";
+        html += '<td class="small">' + escapeHtml(l.dpid || '') + '</td>';
+        html += '<td class="small">' + escapeHtml(localTime || '') + '</td>';
+        html += '<td class="small">' + formatListMultiline(l.tcpport) + '</td>';
+        html += '<td class="small">' + formatListMultiline(l.udpport) + '</td>';
+        html += '<td class="small">' + formatListMultiline(l.icmp) + '</td>';
+        html += '</tr>';
+      }
+      tbody.innerHTML = html;
+    }
+
+    // Search button: send GET to /list_logs?q=<textarea content>
+    (function(){
+      var searchBtn = document.getElementById('searchBtn');
+      var searchText = document.getElementById('searchText');
+
+      searchBtn.addEventListener('click', function(){
+        var q = (searchText.value || '').trim();
+        // display loading row
+        var tbody = document.getElementById('logTableBody');
+        tbody.innerHTML = '<tr><td colspan="11" style="padding:18px;color:var(--muted)">Loading...</td></tr>';
+
+        var url = '/list_logs';
+        if (q.length > 0) {
+          url += '?q=' + encodeURIComponent(q);
+        }
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Accept', 'application/json');
+        xhr.onreadystatechange = function() {
+          if (xhr.readyState !== 4) return;
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              var data = JSON.parse(xhr.responseText);
+              renderLogs(data);
+            } catch (e) {
+              tbody.innerHTML = '<tr><td colspan="11" style="padding:18px;color:var(--muted)">Invalid response from server.</td></tr>';
+              console.error('Failed to parse /list_logs response', e);
+            }
+          } else {
+            tbody.innerHTML = '<tr><td colspan="11" style="padding:18px;color:var(--muted)">Error fetching logs (status ' + xhr.status + ').</td></tr>';
+          }
+        };
+        xhr.send(null);
+      });
+    })();
+
+    // Optional: allow Enter+Ctrl to trigger search from textarea
+    (function(){
+      var ta = document.getElementById('searchText');
+      ta.addEventListener('keydown', function(e){
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('searchBtn').click();
+        }
+      });
+    })();
+
+    // Column resize UI: basic drag-to-resize for headers (optional, uses th.relative with .th-resizer)
+    (function(){
+      var table = document.getElementById('logsTable');
+      if (!table) return;
+      table.addEventListener('mousedown', function(e){
+        if (!e.target.classList.contains('th-resizer')) return;
+        var th = e.target.parentElement;
+        var startX = e.clientX;
+        var startWidth = th.offsetWidth;
+        function onMove(ev){
+          var dx = ev.clientX - startX;
+          var newW = startWidth + dx;
+          if (newW < 40) newW = 40;
+          th.style.width = newW + 'px';
+        }
+        function onUp(){
+          document.removeEventListener('mousemove', onMove);
+          document.removeEventListener('mouseup', onUp);
+        }
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+      });
+    })();
+
+    window.onload = function() {document.getElementById("searchBtn").click();};
+  </script>
+</body>
+</html>
