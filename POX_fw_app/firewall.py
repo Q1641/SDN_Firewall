@@ -14,13 +14,12 @@ import re
 import logging
 import dns.resolver
 
-logging.getLogger('werkzeug').disabled = True   # disable werkzeug logs
-logging.getLogger('flask').disabled = True      # disable flask logs
-logging.getLogger('flask.cli').disabled = True  # disable startup banner
+logging.getLogger('werkzeug').disabled = True
+logging.getLogger('flask').disabled = True
+logging.getLogger('flask.cli').disabled = True
 
 log = core.getLogger()
 
-# Database connection config
 DB_CONFIG = {
     "dbname": "SDNfw",
     "user": "srv_acc",
@@ -129,7 +128,7 @@ def domains_to_ips(domains, dstip):
 			for rdata in answers:
 				ips.add(rdata.address)
 		except Exception as e:
-			print(f"[!] Could not resolve {domain}: {e}")
+			continue
 	return list(ips)
 
 def load_policies():
@@ -167,10 +166,8 @@ def load_policies():
 			action=action
 		)
 		policies.append(policy)
-
 	cur.close()
 	conn.close()
-	log.info('Policies loaded')
 	return policies
 
 def log_firewall_event(srcip, srcuser, dstip, rulename, action, dpid, ruleid=None, tcpport=None, udpport=None, icmp=False):
@@ -192,9 +189,11 @@ def log_firewall_event(srcip, srcuser, dstip, rulename, action, dpid, ruleid=Non
 			conn.close()
 
 class Firewall:
+	policies = []
+
 	def __init__(self):
 		core.openflow.addListenerByName("PacketIn", self._handle_PacketIn, priority=10)
-		self.policies = load_policies()
+		Firewall.policies = load_policies()
 
 	def _handle_PacketIn(self, event):
 		allowed = False
@@ -210,7 +209,7 @@ class Firewall:
 			return
 		matching_rule = "None"
 		matching_id = None
-		for policy in self.policies:
+		for policy in Firewall.policies:
 			res = policy.match(packet)
 			if res[0]:
 				matching_rule = policy.name
@@ -354,6 +353,13 @@ def serve_edit_html():
 		print(f"[!] Error serving /edit: {e}")
 		return jsonify({"error": "Internal server error"}), 500
 
+@ctrl_app.route("/create_policy", methods=["GET"])
+def serve_create_html():
+	username = session.get("username")
+	if not username:
+		return redirect("/login")
+	return render_template("create.html")
+
 @ctrl_app.route("/login", methods=["POST"])
 def login():
 	data = request.get_json(force=True)
@@ -454,6 +460,7 @@ def del_policy():
 		cur.close()
 		conn.close()
 		if deleted:
+			Firewall.policies = load_policies()
 			return jsonify({"message": f"Policy {policy_id} deleted"})
 		else:
 			return jsonify({"error": "Policy not found"}), 404
@@ -482,8 +489,9 @@ def create_policy():
 	icmp = data.get("icmp", False)
 	action = data.get("action", True)
 	disabled = data.get("disabled", False)
-	schedule = data.get("schedule")  # should be 'YYYY-MM-DD'
+	schedule = data.get("schedule")
 	order_index = data.get("order_index")
+	domains = data.get("domains", [])
 
 	try:
 		conn = get_db_connection()
@@ -494,28 +502,27 @@ def create_policy():
 			cur.close()
 			conn.close()
 			return jsonify({"error": "Forbidden: no policy management privilege"}), 403
-		if order_index is None:
+		log.info(f"{order_index}: {isinstance(order_index, int)}")
+		if order_index == "":
 			cur.execute("""
 				INSERT INTO policy
-				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule)
-				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s)
+				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, domains)
+				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s, %s)
 				RETURNING id, order_index
-			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule))
+			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, domains))
 		else:
 			cur.execute("""
 				INSERT INTO policy 
-				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index)
-				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s, %s)
+				(name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index, domains)
+				VALUES (%s, %s::inet[], %s, %s::inet[], %s, %s, %s, %s, %s, %s, %s, %s)
 				RETURNING id, order_index
-			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index))
-			new_policy = cur.fetchone()
+			""", (name, srcip, srcuser, dstip, tcp_ports, udp_ports, icmp, action, disabled, schedule, order_index, domains))
 		conn.commit()
 		cur.close()
 		conn.close()
-
+		Firewall.policies = load_policies()
 		return jsonify({
-			"message": "Policy created successfully",
-			"id": new_policy["id"],
+			"message": "Policy created successfully"
 		})
 
 	except Exception as e:
@@ -636,9 +643,7 @@ def list_logs():
 
 def launch():
 	core.registerNew(Firewall)
-	# Flask server runner
 	def run_flask(app, port):
-		log.info("Starting Flask app on port %s", port)
 		app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
 	t1 = threading.Thread(target=run_flask, args=(ctrl_app, 8000))
 	t2 = threading.Thread(target=run_flask, args=(user_ip_api, 21012))
@@ -648,5 +653,3 @@ def launch():
 
 	t1.start()
 	t2.start()
-
-	log.info("Launched 2 Flask apps: ctrl_app@8080, user_ip_api@21012")
